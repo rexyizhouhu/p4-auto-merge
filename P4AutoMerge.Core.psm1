@@ -229,6 +229,52 @@ function Get-ReintegrateMode {
     return Get-RequestBoolean $Request 'ForceReintegrate'
 }
 
+function Get-ResolveModes {
+    return @(
+        [pscustomobject]@{ Value='-as'; Label='自动解决（不合并内容，默认） / Safe automatic resolve (no merging)'; Notice='仅安全接受单侧修改；需要合并内容的文件留给手工 Resolve。' }
+        [pscustomobject]@{ Value='-am'; Label='自动解决（允许无冲突合并） / Automatic resolve (allow merging)'; Notice='自动接受无冲突合并结果；有冲突的文件保持未解决。' }
+        [pscustomobject]@{ Value='-af'; Label='自动解决（允许带冲突合并） / Automatic resolve (allow merging with conflicts)'; Notice='即使有冲突也接受结果，可能留下冲突标记；每个 CL 后暂停人工检查。' }
+        [pscustomobject]@{ Value='-at'; Label='接受来源 / Accept Source'; Notice='用来源覆盖目标，可能覆盖目标修改及接受删除、重命名等操作。' }
+        [pscustomobject]@{ Value='-ay'; Label='保留目标 / Accept Target'; Notice='保留目标并忽略来源修改；仍会记录为已解决，影响后续集成历史。' }
+    )
+}
+
+function Get-ResolveMode {
+    param($Request)
+    $mode = Get-OptionalValue $Request 'ResolveMode' '-as'
+    if ($mode -cnotin @((Get-ResolveModes).Value)) { throw '不支持的 Resolve 合并方式。' }
+    return $mode
+}
+
+function Get-ResolveNotice {
+    param($Request)
+    return (Get-ResolveOption $Request).Notice
+}
+
+function Get-ResolveOption {
+    param($Request)
+    $mode = Get-ResolveMode $Request
+    return @(Get-ResolveModes | Where-Object { $_.Value -ceq $mode })[0]
+}
+
+function Get-ResolveLabel {
+    param($Request)
+    $option = Get-ResolveOption $Request
+    $mode = $option.Value
+    $label = $option.Label
+    if ($mode -eq '-at') {
+        $source = Get-OptionalValue $Request 'Source' ''
+        if (-not $source) { $source = '未选择来源分支' }
+        return '接受来源：' + $source + ' / Accept Source'
+    }
+    if ($mode -eq '-ay') {
+        $target = Get-OptionalValue $Request 'Target' ''
+        if (-not $target) { $target = '未选择目标分支' }
+        return '保留目标：' + $target + ' / Accept Target'
+    }
+    return $label
+}
+
 function Get-RequestBoolean {
     param($Request, [string]$Name)
     $value = Get-OptionalValue $Request $Name $false
@@ -450,6 +496,7 @@ function Assert-UnopenedContent {
 
 function Get-MergePreview {
     param($Request)
+    [void](Get-ResolveMode $Request)
     Assert-DepotRoot $Request.Source
     if ($Request.Source -ceq $Request.Target) { throw '来源分支与目标分支不能相同。' }
     Assert-MergeDirection $Request
@@ -519,7 +566,7 @@ function New-PendingChange {
     param($State)
     $context = $State.Request.Context
     $description = "P4AutoMerge: $($State.Request.Source) -> $($State.Request.Target)"
-    $description += "`n`tSource CLs: $($State.Changes -join ', ')`n`tResolve mode: safe (-as); manual review required."
+    $description += "`n`tSource CLs: $($State.Changes -join ', ')`n`tResolve mode: $(Get-ResolveMode $State.Request); manual review required."
     $description += "`n`tIgnore integration history: $(Get-ReintegrateMode $State.Request)"
     $form = "Change: new`nClient: $($context.Client)`nUser: $($context.User)`nDescription:`n`t$description`n"
     $output = Invoke-P4 $context @('change', '-i') -Write -InputText $form
@@ -571,13 +618,20 @@ function Complete-CurrentChange {
 
 function Resolve-CurrentChange {
     param($State)
-    [void](Invoke-P4 $State.Request.Context @('resolve', '-as', '-c', "$($State.Pending)") -Write)
+    $mode = Get-ResolveMode $State.Request
+    [void](Invoke-P4 $State.Request.Context @('resolve', $mode, '-c', "$($State.Pending)") -Write)
     $State.ExpectedOpened = @(Get-PendingFiles $State)
     $State.Unresolved = @(Get-UnresolvedFiles $State)
     if ($State.Unresolved.Count -gt 0) {
         $State.Phase = 'Waiting'
         Save-MergeSession $State
         Write-MergeLog "剩余 $($State.Unresolved.Count) 个待手工处理项目。请在 P4V 解决，再点击检查并继续。"
+        return $false
+    }
+    if ($mode -eq '-af') {
+        $State.Phase = 'ReviewRequired'
+        Save-MergeSession $State
+        Write-MergeLog '强制合并已执行；可能留有冲突标记。请检查文件，确认后点击检查并继续。'
         return $false
     }
     Complete-CurrentChange $State
@@ -636,9 +690,10 @@ function Resume-MergeSession {
     }
     if ($state.Phase -in @('Complete', 'Abandoned')) { return $state }
     Assert-SessionOwner $state
-    if ($state.Phase -in @('Waiting', 'Ready', 'Resolving')) { Assert-SessionFiles $state }
+    [void](Get-ResolveMode $state.Request)
+    if ($state.Phase -in @('Waiting', 'Ready', 'Resolving', 'ReviewRequired')) { Assert-SessionFiles $state }
     if ($state.Phase -eq 'Resolving' -and -not (Resolve-CurrentChange $state)) { return $state }
-    if ($state.Phase -eq 'Waiting') {
+    if ($state.Phase -in @('Waiting', 'ReviewRequired')) {
         $state.Unresolved = @(Get-UnresolvedFiles $state)
         if ($state.Unresolved.Count -gt 0) { Save-MergeSession $state; return $state }
         Complete-CurrentChange $state
@@ -719,4 +774,4 @@ function Open-P4VWorkspace {
     Start-Process -FilePath $p4v -ArgumentList $quoted
 }
 
-Export-ModuleMember -Function Get-P4Defaults, ConvertTo-ChangeNumbers, Invoke-MergeAction, Open-P4VWorkspace, Get-CrossBranchMode, Get-ReintegrateMode, Get-AllowedTargetStreams
+Export-ModuleMember -Function Get-P4Defaults, ConvertTo-ChangeNumbers, Invoke-MergeAction, Open-P4VWorkspace, Get-CrossBranchMode, Get-ReintegrateMode, Get-AllowedTargetStreams, Get-ResolveModes, Get-ResolveMode, Get-ResolveNotice, Get-ResolveLabel

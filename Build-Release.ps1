@@ -9,10 +9,12 @@ function Build-Launcher {
     $compiler = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
     if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { throw '缺少 Windows .NET Framework C# 编译器。' }
     $arguments = @('/nologo', '/target:winexe', '/platform:x64', '/optimize+', '/codepage:65001',
-        '/reference:System.Windows.Forms.dll', "/out:$Output",
+        '/reference:System.Windows.Forms.dll', '/reference:System.Web.Extensions.dll', "/out:$Output",
         ('/win32manifest:' + (Join-Path $PSScriptRoot 'Launcher.manifest')),
         ('/resource:' + (Join-Path $PSScriptRoot 'P4AutoMerge.ps1') + ',P4AutoMerge.ps1'),
         ('/resource:' + (Join-Path $PSScriptRoot 'P4AutoMerge.Core.psm1') + ',P4AutoMerge.Core.psm1'),
+        ('/resource:' + (Join-Path $PSScriptRoot 'P4AutoMerge.Update.psm1') + ',P4AutoMerge.Update.psm1'),
+        ('/resource:' + (Join-Path $PSScriptRoot 'P4AutoMerge.UpdateUi.ps1') + ',P4AutoMerge.UpdateUi.ps1'),
         (Join-Path $PSScriptRoot 'Launcher.cs'))
     & $compiler @arguments
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $Output)) { throw '工具 EXE 构建失败。' }
@@ -35,7 +37,7 @@ P4 自动合并工具 $Version（Windows x64）
 3. 选择目标 workspace 和来源 stream，再选择目标 stream。未选择来源前目标不可选。
 4. 默认仅父子分支且方向允许 merge；勾选“允许跨分支合并”才显示其他同仓库目标。
 5. 加载来源 CL，可搜索编号、提交人、描述。搜索隐藏的勾选项仍参与合并。
-   点击“查看已选 CL”可核对勾选及手动输入合并后的编号、顺序、提交人和说明。
+   独立“已选择的 CL”窗口自动显示勾选及手动输入合并后的编号、顺序、提交人和说明。
    未加载详情的手动编号会明确标记；必须再点“1. 预览”检查来源和文件操作。
 6. 需要重合已合入或撤销的 CL 时，可勾选“强制重新合并”；作用于本次全部所选 CL。
 7. 先预览，再执行。CL 按升序处理，结果放入一个 pending CL。
@@ -54,7 +56,11 @@ P4 自动合并工具 $Version（Windows x64）
 本地数据
 EXE 内置界面和核心脚本，首次运行解出到当前用户 LOCALAPPDATA 下的
 FlamesTools\P4AutoMerge\Runtime；队列和诊断也保存在 FlamesTools\P4AutoMerge。
-运行时不下载或安装组件。每个人使用自己的 P4 身份和队列。
+每次启动通过 GitHub 检查正式新版。提示窗显示更新日志，可更新、取消、跳过此版本，
+并可直接选择每次启动、每周、每月或永不提醒；底部“更新 / 设置”也可更改。
+仅确认更新后下载安装包，SHA-256 校验通过且队列结束后关闭工具并启动安装向导。
+便携版更新会安装新版，保留原便携文件；源码启动只打开下载页。
+每个人使用自己的 P4 身份和队列，不需要 GitHub 账号、令牌或 Git。
 SHA256SUMS.txt 可校验发布文件完整性。此版本尚未进行代码签名。
 "@
     [IO.File]::WriteAllText($Path, $text, (New-Object Text.UTF8Encoding($true)))

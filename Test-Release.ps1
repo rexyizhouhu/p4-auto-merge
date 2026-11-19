@@ -35,7 +35,7 @@ function Assert-ReleaseContents {
         [BitConverter]::ToUInt16($bytes, $header + 4) -ne 0x8664 -or
         [BitConverter]::ToUInt16($bytes, $header + 24 + 68) -ne 2) { throw 'Expected x64 Windows GUI executable' }
     $assembly = [Reflection.Assembly]::LoadFile($exe)
-    foreach ($name in @('P4AutoMerge.ps1', 'P4AutoMerge.Core.psm1')) {
+    foreach ($name in @('P4AutoMerge.ps1', 'P4AutoMerge.Core.psm1', 'P4AutoMerge.Update.psm1', 'P4AutoMerge.UpdateUi.ps1')) {
         $resource = $assembly.GetManifestResourceStream($name)
         $memory = New-Object IO.MemoryStream
         try {

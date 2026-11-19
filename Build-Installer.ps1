@@ -38,9 +38,11 @@ P4 自动合并工具 $Version 安装版（Windows x64）
 
 需要 Windows 10/11 x64、Windows PowerShell 5.1、.NET Framework 4.8，以及已安装并登录的 P4。
 手工 Resolve 需要 P4V。本包不包含账号、登录票据、workspace 配置或本地合并队列。
-安装后，“查看已选 CL”可检查本次全部勾选和手动输入的编号、提交人及说明。
+安装后，独立“已选择的 CL”窗口自动显示全部勾选和手动输入的编号、提交人及说明。
 搜索隐藏的勾选项仍会显示；手动编号未加载详情时会明确标记，执行前仍须点击“1. 预览”。
 当前安装包未代码签名。安装器使用 Inno Setup（https://jrsoftware.org/）生成。
+每次启动会检查 GitHub 新版；提示窗附更新日志，可更新、取消、跳过此版本及设置提醒频率。
+仅确认后下载安装包并校验 SHA-256，队列结束后退出工具并启动原目录覆盖安装向导。
 "@
     [IO.File]::WriteAllText($Path, $text, (New-Object Text.UTF8Encoding($true)))
 }
@@ -60,6 +62,9 @@ function New-InstallerRelease {
     $setup = Join-Path $directory "P4AutoMerge-$version-Setup-x64.exe"
     $readme = Join-Path $directory '安装说明.txt'
     Write-InstallerInstructions $readme $version
+    $updateManifest = Join-Path $directory 'update.json'
+    $notes = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'CHANGELOG.md') -Raw -Encoding UTF8
+    Write-UpdateManifest $setup $version $notes $updateManifest
     Write-PackageHashes $directory @([IO.Path]::GetFileName($setup), '安装说明.txt')
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     Add-Type -AssemblyName System.IO.Compression
@@ -71,7 +76,7 @@ function New-InstallerRelease {
         }
     }
     finally { $archive.Dispose() }
-    return [pscustomobject]@{Version=$version; Setup=$setup; Zip=$zip; Package=$script:Package; Compiler=$CompilerPath; Directory=$directory}
+    return [pscustomobject]@{Version=$version; Setup=$setup; Zip=$zip; UpdateManifest=$updateManifest; Package=$script:Package; Compiler=$CompilerPath; Directory=$directory}
 }
 
 New-InstallerRelease

@@ -5,6 +5,8 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Import-Module (Join-Path $PSScriptRoot 'P4AutoMerge.Core.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'P4AutoMerge.Update.psm1') -Force
+. (Join-Path $PSScriptRoot 'P4AutoMerge.UpdateUi.ps1')
 [Windows.Forms.Application]::EnableVisualStyles()
 $script:Controls = @{}
 $script:Clients = @()
@@ -28,6 +30,8 @@ $script:SelectedDescriptionLimit = 500
 $script:SelectedPreviewDirty = $true
 $script:ChangeDetails = @{}
 $script:SelectedPreviewBuildCount = 0
+$script:ResolveModes = @(Get-ResolveModes)
+$script:UpdatingResolveModes = $false
 
 function New-Control {
     param([string]$Type, [string]$Name, [string]$Text = '')
@@ -54,7 +58,7 @@ function Add-FormRow {
 function New-SettingsPanel {
     $grid = New-Control 'TableLayoutPanel' 'Settings'
     $grid.ColumnCount = 2
-    $grid.RowCount = 9
+    $grid.RowCount = 10
     $grid.AutoSize = $true
     [void]$grid.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Absolute', 125)))
     [void]$grid.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 100)))
@@ -73,9 +77,14 @@ function New-SettingsPanel {
     $reintegrate.AutoSize = $true
     $reintegrate.Enabled = $false
     Add-FormRow $grid 7 '已合并的 CL' $reintegrate
-    $notice = New-Control 'Label' 'Notice' '安全 Resolve (-as)：需要合并内容的文件留给你手工处理。结果保留在 pending CL。'
+    $resolve = New-Control 'ComboBox' 'ResolveMode'
+    $resolve.DropDownStyle = 'DropDownList'
+    $resolve.Items.AddRange([object[]]@($script:ResolveModes | ForEach-Object { $_.Label }))
+    $resolve.SelectedIndex = 0
+    Add-FormRow $grid 8 '合并 / Resolve 方式' $resolve
+    $notice = New-Control 'Label' 'Notice' '合并结果保留在 pending CL，请检查后自行提交。'
     $notice.AutoSize = $true
-    $grid.Controls.Add($notice, 0, 8)
+    $grid.Controls.Add($notice, 0, 9)
     $grid.SetColumnSpan($notice, 2)
     foreach ($name in @('Client', 'Source', 'Target')) {
         $script:Controls[$name].DropDownStyle = 'DropDownList'
@@ -128,9 +137,6 @@ function New-SearchToolbar {
     $count = New-Control 'Label' 'SearchCount' '尚未加载来源 CL'
     $count.AutoSize = $true
     $bar.Controls.Add($count)
-    $selected = New-Control 'Button' 'SelectedView' '查看已选 CL'
-    $selected.AutoSize = $true
-    $bar.Controls.Add($selected)
     return $bar
 }
 
@@ -176,7 +182,7 @@ function New-ActionPanel {
 
 function New-OutputPanel {
     $tabs = New-Control 'TabControl' 'Output'
-    foreach ($entry in @(@('Details', '预览 / 待手工处理'), @('SelectedDetails', '已选 CL'), @('Log', '运行日志'))) {
+    foreach ($entry in @(@('Details', '预览 / 待手工处理'), @('Log', '运行日志'))) {
         $page = New-Object Windows.Forms.TabPage
         $page.Text = $entry[1]
         $text = New-Control 'TextBox' $entry[0]
@@ -191,24 +197,62 @@ function New-OutputPanel {
 }
 
 function New-MainForm {
-    $form = New-Control 'Form' 'Main' 'P4 自动合并 — 安全 Resolve / 手动处理冲突'
+    $form = New-Control 'Form' 'Main' 'P4 自动合并 — 默认安全 Resolve / 手动处理冲突'
     $form.Font = New-Object Drawing.Font('Microsoft YaHei UI', 9)
-    $form.Size = New-Object Drawing.Size(1220, 960)
-    $form.MinimumSize = New-Object Drawing.Size(1020, 840)
+    $form.Size = New-Object Drawing.Size(1220, 995)
+    $form.MinimumSize = New-Object Drawing.Size(1020, 875)
     $form.StartPosition = 'CenterScreen'
     $layout = New-Control 'TableLayoutPanel' 'Layout'
     $layout.ColumnCount = 1
-    $layout.RowCount = 3
+    $layout.RowCount = 4
     [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 300)))
     [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
     [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 45)))
+    [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 35)))
     $layout.Controls.Add((New-SettingsPanel), 0, 0)
     $layout.Controls.Add((New-ResizableContent), 0, 1)
     $status = New-Control 'Label' 'Status' '请连接 P4，选择 workspace、来源分支和 CL。'
     $status.AutoSize = $true
     $layout.Controls.Add($status, 0, 2)
+    $layout.Controls.Add((New-UpdateBar), 0, 3)
     $form.Controls.Add($layout)
+    New-SelectedWindow
+    Update-ResolveLabels
     return $form
+}
+
+function Update-ResolveLabels {
+    $combo = $script:Controls.ResolveMode
+    $index = [Math]::Max(0, $combo.SelectedIndex)
+    $script:UpdatingResolveModes = $true
+    $combo.BeginUpdate()
+    try {
+        $combo.Items.Clear()
+        foreach ($mode in $script:ResolveModes) {
+            $request = [pscustomobject]@{ ResolveMode=$mode.Value; Source=$script:Controls.Source.Text; Target=$script:Controls.Target.Text }
+            [void]$combo.Items.Add((Get-ResolveLabel $request))
+        }
+        $combo.SelectedIndex = $index
+    }
+    finally { $combo.EndUpdate(); $script:UpdatingResolveModes = $false }
+}
+
+function New-SelectedWindow {
+    $window = New-Control 'Form' 'SelectedWindow' '已选择的 CL — 自动刷新'
+    $window.Size = New-Object Drawing.Size(660, 540)
+    $window.MinimumSize = New-Object Drawing.Size(420, 260)
+    $window.Font = $script:Controls.Main.Font
+    $window.StartPosition = 'WindowsDefaultLocation'
+    $text = New-Control 'TextBox' 'SelectedDetails'
+    $text.Multiline = $true; $text.ReadOnly = $true
+    $text.ScrollBars = 'Both'; $text.WordWrap = $false
+    $window.Controls.Add($text)
+    $window.Add_FormClosing({
+        if ($_.CloseReason -eq 'UserClosing' -and -not $script:Controls.Main.IsDisposed) {
+            $_.Cancel = $true
+            $this.WindowState = 'Minimized'
+        }
+    })
 }
 
 function New-ResizableContent {
@@ -244,6 +288,7 @@ function Get-UiRequest {
         Source = $script:Controls.Source.Text; Target = $script:Controls.Target.Text
         AllowCrossBranch = $script:Controls.AllowCrossBranch.Checked
         ForceReintegrate = $script:Controls.ForceReintegrate.Checked
+        ResolveMode = $script:ResolveModes[$script:Controls.ResolveMode.SelectedIndex].Value
         ChangeText = $text; Limit = [int]$script:Controls.Limit.Value
     }
 }
@@ -256,7 +301,7 @@ function Reset-Preview {
 
 function Invalidate-SelectedPreview {
     $script:SelectedPreviewDirty = $true
-    if ($script:Controls.Output.SelectedTab -eq $script:Controls.SelectedDetails.Parent) { Update-SelectedPreview }
+    Update-SelectedPreview
 }
 
 function Get-SelectedPreviewSnapshot {
@@ -284,6 +329,7 @@ function Update-SelectedPreview {
     $lines.Add("已选 CL：$(@($snapshot.Numbers).Count) 个；以下为去重后由小到大的合并顺序。")
     $lines.Add("方向：$($request.Source) → $($request.Target)")
     $lines.Add("允许跨分支：$(Get-CrossBranchMode $request)；强制重新合并：$(Get-ReintegrateMode $request)")
+    $lines.Add("合并方式：$(Get-ResolveLabel $request)")
     if ($snapshot.Active) { $lines.Add('显示当前活动队列保存的 CL，队列模式已锁定。') }
     if ($snapshot.Problem) { $lines.Add("手动输入有误：$($snapshot.Problem)；以下仅列出有效勾选项。") }
     $position = 0
@@ -330,6 +376,7 @@ function Start-UiOperation {
     Assert-UiRequest $Action $request
     if ($Action -eq 'Start' -and -not (Confirm-Start $request)) { return }
     if ($Action -eq 'Finish' -and -not (Confirm-Finish)) { return }
+    if ($Action -eq 'Resume' -and -not (Confirm-Review)) { return }
     $shell = [PowerShell]::Create()
     $body = {
         param($modulePath, $actionName, $requestJson, $queue)
@@ -374,13 +421,20 @@ function Confirm-Start {
     if (Get-ReintegrateMode $Request) {
         $message += "`n强制重新合并：已开启，将忽略本次全部所选 CL 的合并历史，已撤销的修改也会重新进入 Resolve。"
     }
-    $message += "`n源 CL：$($numbers -join ', ')`n`n将新建 pending CL，执行 merge 和安全 Resolve (-as)。是否开始？"
+    $message += "`n源 CL：$($numbers -join ', ')`n合并方式：$(Get-ResolveLabel $Request)`n$(Get-ResolveNotice $Request)"
+    $message += "`n`n将新建 pending CL，执行合并和所选 Resolve。是否开始？"
     return [Windows.Forms.MessageBox]::Show($script:Controls.Main, $message, '执行合并', 'YesNo', 'Question') -eq 'Yes'
 }
 
 function Confirm-Finish {
     $message = '结束工具对当前队列的跟踪，保留 P4 中的文件及 pending CL。之后请在 P4V 自行检查、解决和提交，或自行放弃。确定结束？'
     return [Windows.Forms.MessageBox]::Show($script:Controls.Main, $message, '结束队列', 'YesNo', 'Question') -eq 'Yes'
+}
+
+function Confirm-Review {
+    if (-not $script:Session -or (Get-ResolveMode $script:Session.Request) -ne '-af') { return $true }
+    $message = '强制合并可能已把包含冲突标记的文件标为已解决。请确认已逐个检查本次 CL 的结果、处理所有冲突标记，再继续后续 CL。确认已检查？'
+    return [Windows.Forms.MessageBox]::Show($script:Controls.Main, $message, '确认强制合并结果', 'YesNo', 'Warning') -eq 'Yes'
 }
 
 function Set-ClientSelection {
@@ -571,7 +625,7 @@ function Set-SessionButtons {
     $active = $null -ne $script:Session
     $script:Controls.P4V.Enabled = $active
     $script:Controls.Finish.Enabled = $active -and $script:Session.Phase -notin @('Complete', 'Abandoned')
-    $script:Controls.Resume.Enabled = $active -and $script:Session.Phase -in @('Waiting', 'Ready', 'Resolving')
+    $script:Controls.Resume.Enabled = $active -and $script:Session.Phase -in @('Waiting', 'Ready', 'Resolving', 'ReviewRequired')
     $locked = $active -and $script:Session.Phase -notin @('Complete', 'Abandoned')
     foreach ($name in @('Source', 'Changes', 'Fetch', 'Preview', 'SearchToolbar')) {
         $script:Controls[$name].Enabled = -not $locked
@@ -583,6 +637,7 @@ function Set-SessionButtons {
         -not [string]::IsNullOrWhiteSpace($script:Controls.Source.Text)
     $script:Controls.ForceReintegrate.Enabled = $script:Controls.AllowCrossBranch.Enabled
     $script:Controls.ManualChanges.ReadOnly = $locked
+    $script:Controls.ResolveMode.Enabled = -not $locked
 }
 
 function Show-Session {
@@ -594,6 +649,7 @@ function Show-Session {
         $script:Controls.Source.SelectedItem = $State.Request.Source
         $script:Controls.AllowCrossBranch.Checked = Get-CrossBranchMode $State.Request
         $script:Controls.ForceReintegrate.Checked = Get-ReintegrateMode $State.Request
+        $script:Controls.ResolveMode.SelectedIndex = [array]::IndexOf(@($script:ResolveModes | ForEach-Object { $_.Value }), (Get-ResolveMode $State.Request))
         Update-TargetStreams
         $script:Controls.Target.SelectedItem = $State.Request.Target
     }
@@ -604,7 +660,8 @@ function Show-Session {
         "方向：$($State.Request.Source) → $($State.Request.Target)",
         "源 CL：$($State.Changes -join ', ')", "已完成：$($State.Index) / $(@($State.Changes).Count)",
         "状态：$($State.Phase)", "允许跨分支：$(Get-CrossBranchMode $State.Request)",
-        "强制重新合并：$(Get-ReintegrateMode $State.Request)", "待手工处理项目：$(@($State.Unresolved).Count)", ''))
+        "强制重新合并：$(Get-ReintegrateMode $State.Request)", "合并方式：$(Get-ResolveLabel $State.Request)",
+        "待手工处理项目：$(@($State.Unresolved).Count)", ''))
     foreach ($record in @($State.Unresolved | Select-Object -First $script:DetailLimit)) {
         $lines.Add((Get-ResolveDisplay $record))
     }
@@ -627,6 +684,7 @@ function Get-ResolveDisplay {
 function Get-SessionStatus {
     param($State)
     switch ($State.Phase) {
+        'ReviewRequired' { return "pending CL $($State.Pending)：强制合并后请检查冲突标记，确认后点击检查并继续。" }
         'Waiting' { return "pending CL $($State.Pending)：请在 P4V 手动 Resolve 剩余文件，之后点击检查并继续。" }
         'Complete' { return "全部处理完成。请在 P4V 检查 pending CL $($State.Pending) 后自行提交。" }
         'Abandoned' { return "队列跟踪已结束。pending CL $($State.Pending) 及文件保留，请在 P4V 自行处理。" }
@@ -712,15 +770,18 @@ function Register-UiEvents {
         catch { Show-UiError $_.Exception.Message }
     })
     $script:Controls.Client.Add_SelectedIndexChanged({ Set-ClientSelection })
-    $script:Controls.Source.Add_SelectedIndexChanged({ Clear-SourceChanges; Update-TargetStreams })
+    $script:Controls.Source.Add_SelectedIndexChanged({ Clear-SourceChanges; Update-TargetStreams; Update-ResolveLabels })
     $script:Controls.AllowCrossBranch.Add_CheckedChanged({ Update-TargetStreams })
     $script:Controls.ForceReintegrate.Add_CheckedChanged({ Reset-Preview })
-    $script:Controls.Target.Add_SelectedIndexChanged({ Reset-Preview })
+    $script:Controls.ResolveMode.Add_SelectedIndexChanged({
+        if ($script:UpdatingResolveModes) { return }
+        Reset-Preview
+    })
+    $script:Controls.Target.Add_SelectedIndexChanged({ Update-ResolveLabels; Reset-Preview })
     $script:Controls.Changes.Add_ItemChecked({ Update-ChangeSelection $_.Item })
     $script:Controls.ChangeSearch.Add_TextChanged({ Update-FilteredChanges })
     $script:Controls.ClearSearch.Add_Click({ $script:Controls.ChangeSearch.Clear() })
-    $script:Controls.SelectedView.Add_Click({ Update-SelectedPreview; $script:Controls.Output.SelectedTab = $script:Controls.SelectedDetails.Parent })
-    $script:Controls.Output.Add_SelectedIndexChanged({ if ($script:Controls.Output.SelectedTab -eq $script:Controls.SelectedDetails.Parent) { Update-SelectedPreview } })
+    $script:Controls.UpdateSettings.Add_Click({ Show-UpdateSettings })
     $script:Controls.ManualChanges.Add_TextChanged({ Reset-Preview })
     foreach ($name in @('Server', 'User')) {
         $script:Controls[$name].Add_TextChanged({ Reset-Catalog })
@@ -732,7 +793,12 @@ function Register-UiEvents {
         }
     })
     $script:Controls.Main.Add_Shown({
-        if (-not ($SmokeTest -or $HeadlessTest -or $ReadOnlyStartupTest)) { Start-InitialConnection }
+        if (-not ($SmokeTest -or $HeadlessTest -or $ReadOnlyStartupTest)) {
+            Update-SelectedPreview
+            $script:Controls.SelectedWindow.Show($script:Controls.Main)
+            Start-InitialConnection
+            Start-UpdateOperation 'Check'
+        }
     })
 }
 
@@ -762,7 +828,7 @@ function Start-MergeUi {
     $script:Controls.User.Text = $defaults.User
     $timer = New-Object Windows.Forms.Timer
     $timer.Interval = 150
-    $timer.Add_Tick({ Update-UiWorker })
+    $timer.Add_Tick({ Update-UiWorker; Update-UpdateWorker })
     $timer.Start()
     try {
         if ($HeadlessTest) { Test-UiLayout $form -Headless; Test-UiState; return }
@@ -770,7 +836,10 @@ function Start-MergeUi {
         if ($SmokeTest) { Test-UiLayout $form; return }
         [Windows.Forms.Application]::Run($form)
     }
-    finally { $timer.Stop(); $timer.Dispose(); $form.Dispose() }
+    finally {
+        $timer.Stop(); $timer.Dispose(); Stop-UpdateWorker
+        $script:Controls.SelectedWindow.Dispose(); $form.Dispose()
+    }
 }
 
 function Test-UiLayout {
@@ -859,6 +928,9 @@ function Test-UiState {
     Test-UiRequestValidation $context $source
     Test-TargetScope
     Test-ReintegrateControl
+    Test-ResolveControls
+    Test-UpdateControls
+    Test-UpdateHandoff
     $request = [pscustomobject]@{ Source = $source; Target = $target; Context = $context; AllowCrossBranch = $false; ChangeText = '101 102' }
     $state = [pscustomobject]@{
         Request = $request; Pending = 900; Phase = 'Waiting'; Index = 0
@@ -886,6 +958,79 @@ function Test-UiState {
     if ($script:Controls.Client.Items.Count -ne 0 -or $script:Controls.Start.Enabled) { throw 'Changing identity retained old catalog/preview' }
     Test-WorkerCompletion
     Write-Output 'UI state tests passed: workspace target, queue controls, CL search/selection, large preview, connection invalidation. No mouse/keyboard input.'
+}
+
+function Test-ResolveControls {
+    $combo = $script:Controls.ResolveMode
+    if ($combo.Items.Count -ne 5 -or (Get-UiRequest).ResolveMode -ne '-as') { throw 'Resolve mode defaults differ from P4 options' }
+    if (-not $combo.Items[3].Contains($script:Controls.Source.Text) -or
+        -not $combo.Items[4].Contains($script:Controls.Target.Text)) { throw 'Source/target stream is absent from resolve labels' }
+    $script:Preview = [pscustomobject]@{}
+    $script:Controls.Start.Enabled = $true
+    $combo.SelectedIndex = 1
+    if ((Get-UiRequest).ResolveMode -ne '-am' -or $script:Controls.Start.Enabled -or $script:Preview) { throw 'Resolve mode change retained preview' }
+    $state = [pscustomobject]@{ Request=(Get-UiRequest); Phase='ReviewRequired'; Pending=900; Changes=@(101); Index=0; Unresolved=@(); LastError='' }
+    Show-Session $state
+    if ($combo.Enabled -or -not $script:Controls.Resume.Enabled) { throw 'Saved resolve mode not locked or force review cannot continue' }
+    Show-Session $null
+    $combo.SelectedIndex = 0
+    if ($script:Controls.ContainsKey('SelectedView') -or $script:Controls.Output.TabPages.Count -ne 2 -or
+        $script:Controls.SelectedDetails.Parent -ne $script:Controls.SelectedWindow) { throw 'Selected CL overview is not a separate window' }
+    Write-Output 'Resolve controls passed: P4 labels with streams, safe default, invalidation, saved mode lock and independent selected CL window.'
+}
+
+function Test-UpdateControls {
+    $savedRelease=$script:AvailableUpdate; $savedPreferences=$script:UpdatePreferences
+    $module=Get-Module P4AutoMerge.Update
+    $oldPath=& $module { $script:PreferencesPath }
+    $path=Join-Path $env:TEMP ('P4AutoMerge-UpdateUiTest-' + [guid]::NewGuid().ToString('N') + '/settings.json')
+    & $module { param($p) $script:PreferencesPath=$p } $path
+    $script:AvailableUpdate=[pscustomobject]@{Version='9.0.0'; Notes='Test update log'; Page='https://github.com/rexyizhouhu/p4-auto-merge/releases/tag/v9.0.0'}
+    $script:UpdatePreferences=[pscustomobject]@{Frequency='Always'; SkippedVersion=''; LastPromptUtc=''}
+    $dialog=New-UpdateDialog
+    try {
+        $dialog.Form.CreateControl(); $dialog.Form.PerformLayout()
+        $grid=$dialog.Form.Controls[0]
+        $buttons=@($grid.Controls[4].Controls | ForEach-Object { $_.Text })
+        if (($buttons -join ',') -ne '更新,取消,跳过此版本' -or $dialog.Frequency.Items.Count -ne 4 -or
+            -not $grid.Controls[1].Text.Contains('Test update log')) { throw 'Update dialog choices, frequency or notes missing' }
+        Save-UpdateChoice 'Ignore' 1
+        $saved=Get-UpdatePreferences
+        if ($saved.Frequency -ne 'Weekly' -or $saved.SkippedVersion -ne '9.0.0') { throw 'Skip did not save frequency and version' }
+        Save-UpdateChoice 'Cancel' 2
+        if ((Get-UpdatePreferences).Frequency -ne 'Monthly') { throw 'Cancel did not save reminder frequency' }
+    }
+    finally {
+        $dialog.Form.Dispose(); $script:AvailableUpdate=$savedRelease; $script:UpdatePreferences=$savedPreferences
+        & $module { param($p) $script:PreferencesPath=$p } $oldPath
+    }
+    Write-Output 'Update dialog passed hidden checks: release notes, update/cancel/skip, four frequencies, settings persisted on skip/cancel. No dialog displayed.'
+}
+
+function Test-UpdateHandoff {
+    $savedForm=$script:Controls.Main; $savedWorker=$script:Worker; $savedSession=$script:Session
+    $savedRequest=$env:P4AM_UPDATE_REQUEST
+    $env:P4AM_UPDATE_REQUEST=Join-Path $env:TEMP ('P4AutoMerge-HandoffTest-' + [guid]::NewGuid().ToString('N') + '/request.json')
+    $mock=[pscustomobject]@{ Closed=$false }
+    $mock | Add-Member ScriptMethod Close { $this.Closed=$true }
+    $script:Controls.Main=$mock
+    $installer=[pscustomobject]@{Path='C:\test\P4AutoMerge-9.0.0-Setup-x64.exe'; SHA256=('0'*64); Version='9.0.0'}
+    try {
+        $script:Worker=$null; $script:Session=[pscustomobject]@{Phase='Waiting'}
+        Complete-UpdateDownload $installer
+        if ($mock.Closed -or (Test-Path -LiteralPath $env:P4AM_UPDATE_REQUEST)) { throw 'Update closed an active merge queue' }
+        $script:Session=$null
+        Complete-UpdateDownload $installer
+        $request=Get-Content -LiteralPath $env:P4AM_UPDATE_REQUEST -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (-not $mock.Closed -or $request.Path -cne $installer.Path -or $request.SHA256 -cne $installer.SHA256) {
+            throw 'Verified download handoff did not close cleanly or retain hash/path'
+        }
+    }
+    finally {
+        $script:Controls.Main=$savedForm; $script:Worker=$savedWorker; $script:Session=$savedSession
+        $env:P4AM_UPDATE_REQUEST=$savedRequest
+    }
+    Write-Output 'Update handoff passed: active queue blocks close/install, idle handoff preserves verified path/hash. No installer executed.'
 }
 
 function Test-UiRequestValidation {
@@ -955,7 +1100,6 @@ function Test-ChangeSearch {
 
 function Test-SelectedOverview {
     $script:Controls.ManualChanges.Text = '103, 104 101'
-    $script:Controls.Output.SelectedTab = $script:Controls.SelectedDetails.Parent
     Update-SelectedPreview
     $text = $script:Controls.SelectedDetails.Text
     foreach ($expected in @('已选 CL：4 个', 'CL 101', 'CL 102', 'CL 103', 'CL 104', 'Alice', 'Bob', '未加载提交人和说明')) {
@@ -1034,7 +1178,6 @@ function Test-SelectedOverviewBounds {
 }
 
 function Test-SavedSelectedPreview {
-    $script:Controls.Output.SelectedTab = $script:Controls.SelectedDetails.Parent
     Update-SelectedPreview
     $text = $script:Controls.SelectedDetails.Text
     if (-not $text.Contains('已选 CL：2 个') -or -not $text.Contains('活动队列保存')) {
@@ -1137,3 +1280,4 @@ function Test-PreviewMessages {
 }
 
 Start-MergeUi
+if ($env:P4AM_UPDATE_REQUEST -and (Test-Path -LiteralPath $env:P4AM_UPDATE_REQUEST)) { exit 42 }

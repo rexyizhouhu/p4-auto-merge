@@ -573,6 +573,42 @@ try {
             ConvertFrom-P4Output ([pscustomobject]@{ ExitCode=1; Output='{"severity":2,"generic":17,"data":"Target not in client view; some files skipped."}'; Error='' }) 'integrate'
         } } '停止'
     }
+    foreach ($mode in @('-as', '-am', '-at', '-ay')) {
+        Test-Case "Resolve mode $mode is saved and scoped to the pending CL" {
+            $request = New-TestRequest
+            $request | Add-Member NoteProperty ResolveMode $mode
+            & $module { $script:Fixture.Unresolved = $false }
+            $state = Invoke-MergeAction 'Start' $request $null
+            Assert-True ($state.Phase -eq 'Complete') 'Resolve mode did not complete'
+            $calls = @(Get-TestCalls | Where-Object { $_.Command[0] -eq 'resolve' -and $_.Command -notcontains '-n' })
+            Assert-True ($calls.Count -eq 2) 'Wrong number of resolve commands'
+            foreach ($call in $calls) {
+                Assert-True ($call.Command -ccontains $mode -and $call.Command -contains '-c' -and $call.Command -contains '900') 'Mode or pending scope differs'
+            }
+            $saved = Invoke-MergeAction 'Load' $request $null
+            Assert-True ((Get-ResolveMode $saved.Request) -ceq $mode) 'Saved session lost resolve mode'
+        }
+    }
+    Test-Case 'Force-conflict mode pauses after every CL and never repeats merge on resume' {
+        $request = New-TestRequest
+        $request | Add-Member NoteProperty ResolveMode '-af'
+        & $module { $script:Fixture.Unresolved = $false }
+        $state = Invoke-MergeAction 'Start' $request $null
+        Assert-True ($state.Phase -eq 'ReviewRequired' -and $state.Index -eq 0) 'Force-conflict mode did not pause for review'
+        $state = Invoke-MergeAction 'Resume' $request $null
+        Assert-True ($state.Phase -eq 'ReviewRequired' -and $state.Index -eq 1) 'Next CL was not paused'
+        $state = Invoke-MergeAction 'Resume' $request $null
+        Assert-True ($state.Phase -eq 'Complete' -and $state.Index -eq 2) 'Reviewed queue did not finish'
+        $merges = @(Get-TestCalls | Where-Object { $_.Command[0] -eq 'merge' -and $_.Command -notcontains '-n' })
+        Assert-True ($merges.Count -eq 2) 'Resume repeated merge'
+    }
+    Test-Case 'Reject invalid resolve mode before queries or writes; old requests remain safe' {
+        $request = New-TestRequest
+        Assert-True ((Get-ResolveMode $request) -eq '-as') 'Old queue default is unsafe'
+        $request | Add-Member NoteProperty ResolveMode '-af -at'
+        Assert-Throws { Invoke-MergeAction 'Preview' $request $null } 'Resolve'
+        Assert-True (@(Get-TestCalls).Count -eq 0) 'Invalid resolve mode reached P4'
+    }
     Write-Output "All $script:Passed test groups passed. No real merge/resolve/sync/submit executed."
 }
 finally {
