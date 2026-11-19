@@ -22,6 +22,7 @@ $script:SelectedChanges = New-Object 'System.Collections.Generic.HashSet[int]'
 $script:UpdatingChanges = $false
 $script:LastOperationError = ''
 $script:ChangeCache = @()
+$script:SearchAuthor = ''
 $script:DescriptionDisplayLimit = 200
 $script:PreviewMessageLimit = 50
 $script:PreviewMessageLength = 1000
@@ -32,6 +33,14 @@ $script:ChangeDetails = @{}
 $script:SelectedPreviewBuildCount = 0
 $script:ResolveModes = @(Get-ResolveModes)
 $script:UpdatingResolveModes = $false
+$script:UiColors = @{
+    Panel = [Drawing.ColorTranslator]::FromHtml('#F2F6FC')
+    Divider = [Drawing.ColorTranslator]::FromHtml('#D4E0EF')
+    Text = [Drawing.ColorTranslator]::FromHtml('#24364B')
+    Border = [Drawing.ColorTranslator]::FromHtml('#C5D4E5')
+    Hover = [Drawing.ColorTranslator]::FromHtml('#E5EFFC')
+    Pressed = [Drawing.ColorTranslator]::FromHtml('#D5E5FA')
+}
 
 function New-Control {
     param([string]$Type, [string]$Name, [string]$Text = '')
@@ -40,8 +49,24 @@ function New-Control {
     $control.Text = $Text
     $control.Dock = 'Fill'
     $control.Margin = New-Object Windows.Forms.Padding(4)
+    Set-ControlColors $control
     $script:Controls[$Name] = $control
     return $control
+}
+
+function Set-ControlColors {
+    param($Control)
+    $Control.ForeColor = $script:UiColors.Text
+    if ($Control -is [Windows.Forms.TextBox] -or $Control -is [Windows.Forms.ListView]) {
+        $Control.BackColor = [Drawing.Color]::White
+    }
+    if ($Control -isnot [Windows.Forms.Button]) { return }
+    $Control.UseVisualStyleBackColor = $false
+    $Control.BackColor = [Drawing.Color]::White
+    $Control.FlatStyle = 'Flat'
+    $Control.FlatAppearance.BorderColor = $script:UiColors.Border
+    $Control.FlatAppearance.MouseOverBackColor = $script:UiColors.Hover
+    $Control.FlatAppearance.MouseDownBackColor = $script:UiColors.Pressed
 }
 
 function Add-FormRow {
@@ -95,12 +120,11 @@ function New-SettingsPanel {
 
 function New-SelectionPanel {
     $grid = New-Control 'TableLayoutPanel' 'Selection'
-    $grid.RowCount = 4
+    $grid.RowCount = 3
     $grid.ColumnCount = 1
     [void]$grid.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 33)))
     [void]$grid.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 33)))
     [void]$grid.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
-    [void]$grid.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 60)))
     $grid.Controls.Add((New-ListToolbar), 0, 0)
     $grid.Controls.Add((New-SearchToolbar), 0, 1)
     $list = New-Control 'ListView' 'Changes'
@@ -113,30 +137,33 @@ function New-SelectionPanel {
         [void]$list.Columns.Add($column[0], $column[1])
     }
     $grid.Controls.Add($list, 0, 2)
-    $manual = New-Control 'TextBox' 'ManualChanges'
-    $manual.Multiline = $true
-    $manual.ScrollBars = 'Vertical'
-    $manual.AccessibleName = '额外 CL 编号，使用空格、逗号或换行分隔；与勾选 CL 合并去重'
-    $grid.Controls.Add($manual, 0, 3)
     return $grid
 }
 
 function New-SearchToolbar {
-    $bar = New-Control 'FlowLayoutPanel' 'SearchToolbar'
-    $bar.WrapContents = $false
-    $label = New-Control 'Label' 'SearchLabel' '搜索 CL / 提交人 / 描述：'
+    $bar = New-Control 'TableLayoutPanel' 'SearchToolbar'
+    $bar.ColumnCount = 5
+    $bar.RowCount = 1
+    foreach ($width in @(165, 0, 90, 75, 225)) {
+        $style = New-Object Windows.Forms.ColumnStyle('Absolute', $width)
+        if ($width -eq 0) { $style.SizeType = 'Percent'; $style.Width = 100 }
+        [void]$bar.ColumnStyles.Add($style)
+    }
+    $label = New-Control 'Label' 'SearchLabel' '搜索 CL / 提交人：'
     $label.AutoSize = $true
-    $bar.Controls.Add($label)
+    $bar.Controls.Add($label, 0, 0)
     $search = New-Control 'TextBox' 'ChangeSearch'
-    $search.Width = 270
-    $search.AccessibleName = '在已加载的来源 CL 中搜索编号、提交人和完整描述'
-    $bar.Controls.Add($search)
+    $search.AccessibleName = '仅搜索 CL 编号和提交人；输入完整提交人账号时优先精确筛选'
+    $bar.Controls.Add($search, 1, 0)
     $clear = New-Control 'Button' 'ClearSearch' '清除搜索'
     $clear.AutoSize = $true
-    $bar.Controls.Add($clear)
-    $count = New-Control 'Label' 'SearchCount' '尚未加载来源 CL'
-    $count.AutoSize = $true
-    $bar.Controls.Add($count)
+    $bar.Controls.Add($clear, 2, 0)
+    $caption = New-Control 'Label' 'ManualLabel' '手动 CL：'
+    $caption.TextAlign = 'MiddleLeft'
+    $bar.Controls.Add($caption, 3, 0)
+    $manual = New-Control 'TextBox' 'ManualChanges'
+    $manual.AccessibleName = '补充 CL 编号，用逗号或空格分隔；与上方勾选的 CL 合并去重'
+    $bar.Controls.Add($manual, 4, 0)
     return $bar
 }
 
@@ -157,9 +184,9 @@ function New-ListToolbar {
     $limit.Value = 1000
     $limit.Width = 70
     $bar.Controls.Add($limit)
-    $hint = New-Control 'Label' 'ManualHint' '下方可额外输入 CL 编号（逗号 / 空格 / 换行分隔）'
-    $hint.AutoSize = $true
-    $bar.Controls.Add($hint)
+    $count = New-Control 'Label' 'SearchCount' '尚未加载来源 CL'
+    $count.AutoSize = $true
+    $bar.Controls.Add($count)
     return $bar
 }
 
@@ -185,6 +212,7 @@ function New-OutputPanel {
     foreach ($entry in @(@('Details', '预览 / 待手工处理'), @('Log', '运行日志'))) {
         $page = New-Object Windows.Forms.TabPage
         $page.Text = $entry[1]
+        $page.BackColor = [Drawing.Color]::White
         $text = New-Control 'TextBox' $entry[0]
         $text.Multiline = $true
         $text.ReadOnly = $true
@@ -263,7 +291,9 @@ function New-ResizableContent {
     $split.Panel1MinSize = 300
     $split.Panel2MinSize = 110
     $split.SplitterDistance = 350
-    $split.BackColor = [Drawing.SystemColors]::ControlDark
+    $split.BackColor = $script:UiColors.Divider
+    $split.Panel1.BackColor = $script:UiColors.Panel
+    $split.Panel2.BackColor = [Drawing.Color]::White
     $split.AccessibleName = '上下拖动分隔条，调整来源 CL 列表和下方预览的高度'
     $hostPanel = New-Control 'TableLayoutPanel' 'SelectionHost'
     $hostPanel.ColumnCount = 1
@@ -504,18 +534,29 @@ function Show-ChangeList {
     foreach ($change in $script:SourceChanges) {
         $script:ChangeDetails[[int]$change.change] = $change
         $cache.Add([pscustomobject]@{
-            SearchText = "$($change.change) $($change.user) $($change.desc)"
+            SearchText = "$($change.change) $($change.user)"
+            User = [string]$change.user
             Item = New-ChangeListItem $change
         })
     }
     $script:ChangeCache = $cache.ToArray()
     Reset-Preview
     Update-FilteredChanges
-    $script:Controls.Status.Text = "已加载 $($script:SourceChanges.Count) 个来源 CL。搜索仅针对已加载条目，上限 1000；更多已知 CL 可在下方手动输入编号。"
+    $script:Controls.Status.Text = "已加载 $($script:SourceChanges.Count) 个来源 CL。完整账号优先匹配提交人；搜索仅覆盖已加载条目，其他 CL 可在右侧输入编号。"
+}
+
+function Get-SearchAuthor {
+    param([string]$Query)
+    if (-not $Query) { return '' }
+    foreach ($entry in $script:ChangeCache) {
+        if ([string]::Equals($entry.User, $Query, [StringComparison]::OrdinalIgnoreCase)) { return $entry.User }
+    }
+    return ''
 }
 
 function Update-FilteredChanges {
     $query = $script:Controls.ChangeSearch.Text.Trim()
+    $script:SearchAuthor = Get-SearchAuthor $query
     $script:UpdatingChanges = $true
     $list = $script:Controls.Changes
     $list.BeginUpdate()
@@ -523,7 +564,8 @@ function Update-FilteredChanges {
         $list.Items.Clear()
         $items = New-Object 'System.Collections.Generic.List[System.Windows.Forms.ListViewItem]'
         foreach ($entry in $script:ChangeCache) {
-            if ($query -and $entry.SearchText.IndexOf($query, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+            if ($script:SearchAuthor -and -not [string]::Equals($entry.User, $script:SearchAuthor, [StringComparison]::OrdinalIgnoreCase)) { continue }
+            if (-not $script:SearchAuthor -and $query -and $entry.SearchText.IndexOf($query, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
             $entry.Item.Checked = $script:SelectedChanges.Contains([int]$entry.Item.Text)
             $items.Add($entry.Item)
         }
@@ -554,6 +596,7 @@ function New-ChangeListItem {
 
 function Update-SearchCount {
     $script:Controls.SearchCount.Text = "显示 $($script:Controls.Changes.Items.Count) / 已加载 $($script:SourceChanges.Count)，已勾选 $($script:SelectedChanges.Count)"
+    if ($script:SearchAuthor) { $script:Controls.SearchCount.Text += "，提交人：$script:SearchAuthor" }
 }
 
 function Update-ChangeSelection {
@@ -868,6 +911,7 @@ function Test-ResizableContent {
         foreach ($size in @($originalSize, $form.MinimumSize)) {
             $form.Size = $size
             $form.PerformLayout()
+            Test-CompactSearchRow
             Test-SplitterRange $split
         }
     }
@@ -877,6 +921,19 @@ function Test-ResizableContent {
         $split.SplitterDistance = $original
     }
     Write-Output 'Resizable preview passed: default 1000 CLs, movable divider and a complete CL row at minimum window/split size.'
+}
+
+function Test-CompactSearchRow {
+    $bar = $script:Controls.SearchToolbar
+    foreach ($name in @('ChangeSearch', 'ManualChanges')) {
+        $field = $script:Controls[$name]
+        if ($field.Parent -ne $bar -or $field.Right -gt $bar.ClientSize.Width -or $field.Width -lt 150) {
+            throw "Compact search field is clipped or misplaced: $name"
+        }
+    }
+    if ($script:Controls.ManualChanges.Multiline -or $script:Controls.Selection.RowCount -ne 3) {
+        throw 'Large manual CL input area was not removed'
+    }
 }
 
 function Test-SplitterRange {
@@ -1073,6 +1130,7 @@ function Test-WorkerCompletion {
 }
 
 function Test-ChangeSearch {
+    Test-AuthorSearchCollision
     [void]$script:Controls.Changes.Handle
     $records = @(
         [pscustomobject]@{ change = '101'; user = 'Alice'; time = '1700000000'; desc = '修复开门 [x]' },
@@ -1082,7 +1140,7 @@ function Test-ChangeSearch {
     Show-ChangeList $records
     $script:Controls.Changes.Items[0].Checked = $true
     if (-not $script:SelectedChanges.Contains(101)) { throw 'Checked-item event did not record selection' }
-    foreach ($entry in @(@('102', 1), @('ALICE', 2), @('开门', 1), @('[x]', 1), @('尾部标记', 1), @('missing', 0))) {
+    foreach ($entry in @(@('102', 1), @('ALICE', 2), @('ali', 2), @('开门', 0), @('[x]', 0), @('尾部标记', 0), @('missing', 0))) {
         $script:Controls.ChangeSearch.Text = $entry[0]
         if ($script:Controls.Changes.Items.Count -ne $entry[1]) { throw "Search failed: $($entry[0])" }
     }
@@ -1096,6 +1154,29 @@ function Test-ChangeSearch {
     if (-not $script:Controls.Changes.Items[0].Checked -or $script:SelectedChanges.Count -ne 1) { throw 'Clearing search lost selection state' }
     $script:Controls.Source.SelectedItem = '//Depot/Target'
     if ($script:SelectedChanges.Count -ne 0 -or $script:Controls.Changes.Items.Count -ne 0) { throw 'Source change retained old CL selections' }
+}
+
+function Test-AuthorSearchCollision {
+    $records = @(
+        [pscustomobject]@{ change = '201'; user = 'ta'; time = '1700000000'; desc = 'https://www.tapd.cn/issue/1' },
+        [pscustomobject]@{ change = '202'; user = 'Bob'; time = '1700000001'; desc = 'https://www.tapd.cn/issue/2 ta' },
+        [pscustomobject]@{ change = '203'; user = 'ta-helper'; time = '1700000002'; desc = 'https://www.tapd.cn/issue/3' }
+    )
+    Show-ChangeList $records
+    $script:Controls.Changes.Items[1].Checked = $true
+    foreach ($query in @('ta', 'TA', ' ta ')) {
+        $script:Controls.ChangeSearch.Text = $query
+        if ($script:Controls.Changes.Items.Count -ne 1 -or $script:Controls.Changes.Items[0].Text -ne '201') {
+            throw 'Exact submitter search was polluted by TAPD links or other usernames'
+        }
+    }
+    if (-not $script:SelectedChanges.Contains(202) -or -not $script:Controls.SearchCount.Text.Contains('提交人：ta')) {
+        throw 'Author filtering lost a hidden selection or failed to explain its mode'
+    }
+    $script:Controls.ChangeSearch.Text = 'tapd'
+    if ($script:Controls.Changes.Items.Count -ne 0) { throw 'Description still participates in search' }
+    Clear-SourceChanges
+    Write-Output 'Author search passed: exact ta beats TAPD/username substrings, case/space handling and hidden checks retained.'
 }
 
 function Test-SelectedOverview {
