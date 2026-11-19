@@ -19,6 +19,8 @@ p4 set P4CLIENT=目标workspace名称
 p4 login
 ```
 
+源码会自动识别服务器模式：Unicode 使用 UTF-8，非 Unicode 不做字符集转换；无需手动设置 P4CHARSET。非 Unicode 服务器返回非 UTF-8 文本时会停止并提示。已发布的 1.0.1 安装包尚不包含此修复。
+
 ## 3. 使用操作
 
 1. 从 [下载页](https://github.com/rexyizhouhu/p4-auto-merge/releases/latest)下载安装版，或解压便携版运行 EXE。源码版双击 [Start.cmd](./Start.cmd)。

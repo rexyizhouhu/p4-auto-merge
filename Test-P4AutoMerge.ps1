@@ -31,6 +31,7 @@ function New-TestRequest {
 
 function Set-TestFixture {
     & $module {
+        $script:P4Charsets = @{}
         $script:Fixture = @{
             Calls = New-Object 'System.Collections.Generic.List[object]'
             Stream = '//Depot/Target'; Host = $env:COMPUTERNAME; Opened = @()
@@ -40,15 +41,16 @@ function Set-TestFixture {
             WarningMerge = $false; Unmapped = $false; ActualTarget = '//Depot/Target/a.txt'
             SourceOptions = 'allsubmit unlocked toparent nofromparent mergedown'
             SourceIsolate = $false; ParentRemap = $false; TargetParent = 'none'
+            Info = @{ serverVersion = 'P4D/TEST/2025.2'; unicode = 'enabled' }; ProbeFailure = $false
         }
         $script:P4Runner = {
             param($arguments, $inputText, $timeout)
-            $verbs = @('client', 'opened', 'describe', 'merge', 'integrate', 'reconcile', 'change', 'resolve', 'where', 'stream')
+            $verbs = @('client', 'opened', 'describe', 'merge', 'integrate', 'reconcile', 'change', 'resolve', 'where', 'stream', 'info')
             $verbIndex = 0
             while ($verbIndex -lt $arguments.Count -and $arguments[$verbIndex] -notin $verbs) { $verbIndex++ }
             if ($verbIndex -ge $arguments.Count) { throw 'Test runner received unknown command.' }
             $command = @($arguments[$verbIndex..($arguments.Count - 1)])
-            $script:Fixture.Calls.Add([pscustomobject]@{ Command = $command; Input = $inputText })
+            $script:Fixture.Calls.Add([pscustomobject]@{ Command = $command; Input = $inputText; Arguments = $arguments })
             if ($command[0] -eq 'change' -and $command -contains '-i') {
                 return [pscustomobject]@{ ExitCode = 0; Output = 'Change 900 created.'; Error = '' }
             }
@@ -64,6 +66,10 @@ function Install-FixtureHelpers {
         function script:Get-FixtureRows {
             param([string[]]$Command)
             switch ($Command[0]) {
+                'info' {
+                    if ($script:Fixture.ProbeFailure) { throw 'Simulated server probe failure' }
+                    return $script:Fixture.Info
+                }
                 'client' { return @{ Stream = $script:Fixture.Stream; Host = $script:Fixture.Host; Root = $script:StateDirectory; Type = 'writeable' } }
                 'stream' { return Get-FixtureStream $Command }
                 'opened' { return $script:Fixture.Opened }
@@ -263,6 +269,80 @@ $testRoot = Join-Path $env:TEMP ('P4AutoMerge-Test-' + [guid]::NewGuid().ToStrin
 Install-FixtureHelpers
 
 try {
+    Test-Case 'Unicode mode is probed once with none and subsequent commands use UTF8' {
+        [void](Invoke-MergeAction 'Preview' (New-TestRequest) $null)
+        $calls = @(Get-TestCalls)
+        $probes = @($calls | Where-Object { $_.Command[0] -eq 'info' })
+        Assert-True ($probes.Count -eq 1) 'Repeated Unicode probes'
+        Assert-True ($probes[0].Arguments -contains 'none') 'Probe forced Unicode'
+        foreach ($call in @($calls | Where-Object { $_.Command[0] -ne 'info' })) {
+            $index = [array]::IndexOf($call.Arguments, '-C')
+            Assert-True ($call.Arguments[$index + 1] -eq 'utf8') 'Unicode command did not use UTF8'
+            $index = [array]::IndexOf($call.Arguments, '-Q')
+            Assert-True ($call.Arguments[$index + 1] -eq 'utf8') 'Metadata charset inherited a conflicting setting'
+        }
+    }
+    Test-Case 'Non-Unicode server overrides inherited Unicode charset without changing environment' {
+        $oldCharset = $env:P4CHARSET
+        $oldCommandCharset = $env:P4COMMANDCHARSET
+        try {
+            $env:P4CHARSET = 'utf8'
+            $env:P4COMMANDCHARSET = 'utf16'
+            & $module { $script:Fixture.Info.Remove('unicode') }
+            [void](Invoke-MergeAction 'Preview' (New-TestRequest) $null)
+            foreach ($call in @(Get-TestCalls)) {
+                foreach ($flag in @('-C', '-Q')) {
+                    $index = [array]::IndexOf($call.Arguments, $flag)
+                    Assert-True ($index -ge 0 -and $call.Arguments[$index + 1] -eq 'none') 'Non-Unicode server inherited a Unicode charset'
+                }
+            }
+            Assert-True ($env:P4CHARSET -eq 'utf8' -and $env:P4COMMANDCHARSET -eq 'utf16') 'Changed process charset settings'
+        }
+        finally { $env:P4CHARSET = $oldCharset; $env:P4COMMANDCHARSET = $oldCommandCharset }
+    }
+    Test-Case 'Charset cache is isolated by server including switch back' {
+        $request = New-TestRequest
+        & $module { param($context) [void](Invoke-P4 $context @('info')) } $request.Context
+        $request.Context.Server = 'other:1666'
+        & $module { $script:Fixture.Info.unicode = 'disabled' }
+        & $module { param($context) [void](Invoke-P4 $context @('info')) } $request.Context
+        $request.Context.Server = 'test:1666'
+        & $module { param($context) [void](Invoke-P4 $context @('info')) } $request.Context
+        $calls = @(Get-TestCalls)
+        Assert-True ($calls.Count -eq 5) 'Switching server reused wrong probe or repeated cached probe'
+        Assert-True ($calls[-1].Arguments -contains 'utf8') 'Switch back kept non-Unicode mode'
+        Assert-True ($calls[3].Arguments -contains 'none') 'Second server kept Unicode mode'
+    }
+    Test-Case 'Failed or incomplete Unicode probes block writes and are not cached' {
+        & $module { $script:Fixture.ProbeFailure = $true }
+        Assert-Throws { Invoke-MergeAction 'Start' (New-TestRequest) $null } 'probe failure'
+        Assert-Throws { Invoke-MergeAction 'Start' (New-TestRequest) $null } 'probe failure'
+        $calls = @(Get-TestCalls)
+        Assert-True ($calls.Count -eq 2 -and @($calls | Where-Object { $_.Command[0] -ne 'info' }).Count -eq 0) 'Probe failure reached a write'
+        & $module { $script:Fixture.ProbeFailure = $false; $script:Fixture.Info = @{} }
+        Assert-Throws { Invoke-MergeAction 'Start' (New-TestRequest) $null } 'Unicode'
+        & $module { $script:Fixture.Info = @{ serverVersion = 'P4D/TEST'; unicode = 'unexpected' } }
+        Assert-Throws { Invoke-MergeAction 'Start' (New-TestRequest) $null } 'Unicode'
+    }
+    Test-Case 'UTF8 Chinese metadata is preserved and replacement characters stop processing' {
+        & $module { $script:Fixture.Info.Remove('unicode'); $script:Fixture.Info.clientName = '中文工作区' }
+        $records = @(& $module { param($context) Invoke-P4 $context @('info') } (New-TestRequest).Context)
+        Assert-True ($records[0].clientName -ceq '中文工作区') 'Chinese metadata changed'
+        & $module { $script:Fixture.Info.clientName = 'broken' + [char]0xFFFD }
+        Assert-Throws { & $module { param($context) Invoke-P4 $context @('info') } (New-TestRequest).Context } '编码替换'
+        & $module {
+            $script:Fixture.Info.clientName = 'valid'
+            $script:Fixture.ActualTarget = '//Depot/Target/broken' + [char]0xFFFD + '.txt'
+        }
+        Assert-Throws { Invoke-MergeAction 'Start' (New-TestRequest) $null } '编码替换'
+        $writes = @(Get-TestCalls | Where-Object { ($_.Command[0] -eq 'change' -and $_.Command -contains '-i') -or ($_.Command[0] -in @('merge','integrate') -and $_.Command -notcontains '-n') })
+        Assert-True ($writes.Count -eq 0) 'Damaged metadata reached a write'
+    }
+    Test-Case 'Unicode server preserves a valid literal replacement character in metadata' {
+        & $module { $script:Fixture.Info.clientName = 'valid' + [char]0xFFFD }
+        $records = @(& $module { param($context) Invoke-P4 $context @('info') } (New-TestRequest).Context)
+        Assert-True ($records[0].clientName -ceq ('valid' + [char]0xFFFD)) 'Rejected valid Unicode metadata'
+    }
     Test-Case 'Native process receives exact no-BOM UTF8 form bytes and restores encoding on failure' {
         Test-NativeInputEncoding
     }

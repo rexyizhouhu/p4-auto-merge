@@ -2,6 +2,7 @@
 $ErrorActionPreference = 'Stop'
 $script:LogQueue = $null
 $script:P4Runner = $null
+$script:P4Charsets = @{}
 $script:StateDirectory = Join-Path $env:LOCALAPPDATA 'FlamesTools\P4AutoMerge'
 $script:QueryTimeout = 120000
 $script:WriteTimeout = 1800000
@@ -96,7 +97,6 @@ function Start-P4Process {
 
 function Get-P4Defaults {
     $env:P4PORT = '192.168.60.201:1666'
-    $env:P4CHARSET = 'utf8'
     foreach ($name in @('P4USER', 'P4CLIENT')) {
         if ([Environment]::GetEnvironmentVariable($name)) { continue }
         $result = Invoke-P4Process @('set', $name) $null $script:QueryTimeout
@@ -108,12 +108,15 @@ function Get-P4Defaults {
 }
 
 function ConvertFrom-P4Output {
-    param($Result, [string]$Command = '')
+    param($Result, [string]$Command = '', [switch]$RejectReplacement)
     $records = New-Object 'System.Collections.Generic.List[object]'
     foreach ($line in ($Result.Output -split '\r?\n')) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         try { $records.Add(($line | ConvertFrom-Json)) }
         catch { throw "P4 返回了无法识别的输出：$line" }
+    }
+    if ($RejectReplacement) {
+        foreach ($record in $records) { Assert-P4RecordEncoding $record }
     }
     $errors = @($records | Where-Object { [int](Get-OptionalValue $_ 'severity' 0) -ge 3 })
     if ($errors.Count -gt 0) {
@@ -148,24 +151,59 @@ function Assert-ExpectedWarning {
     }
 }
 
+function Assert-P4RecordEncoding {
+    param($Record)
+    foreach ($property in $Record.PSObject.Properties) {
+        if ($property.Value -is [string] -and $property.Value.Contains([char]0xFFFD)) {
+            throw 'P4 返回了编码替换字符，已停止操作以免使用损坏的路径。非 Unicode 服务器的元数据需为 UTF-8；工具不猜测旧字符集。'
+        }
+    }
+}
+
+function Get-P4ConnectionArguments {
+    param($Context, [string]$Charset)
+    $arguments = @('-p', $Context.Server, '-C', $Charset, '-Q', $Charset)
+    if ($Context.User) { $arguments += @('-u', $Context.User) }
+    if ($Context.Client) { $arguments += @('-c', $Context.Client) }
+    return $arguments
+}
+
+function Invoke-P4CommandProcess {
+    param([string[]]$Arguments, [AllowNull()][string]$InputText, [int]$Timeout)
+    if ($script:P4Runner) { return & $script:P4Runner $Arguments $InputText $Timeout }
+    return Invoke-P4Process $Arguments $InputText $Timeout
+}
+
+function Get-P4ServerCharset {
+    param($Context)
+    $server = [string]$Context.Server
+    if ([string]::IsNullOrWhiteSpace($server)) { throw '请先指定 P4 服务器。' }
+    if ($script:P4Charsets.ContainsKey($server)) { return $script:P4Charsets[$server] }
+    $arguments = @(Get-P4ConnectionArguments $Context 'none') + @('-ztag', '-Mj', 'info')
+    $result = Invoke-P4CommandProcess $arguments $null $script:QueryTimeout
+    $info = @(ConvertFrom-P4Output $result 'info' | Where-Object { Get-OptionalValue $_ 'serverVersion' })
+    if ($info.Count -ne 1) { throw 'P4 服务器信息不完整，无法确认 Unicode 模式，已停止操作。' }
+    $unicode = [string](Get-OptionalValue $info[0] 'unicode')
+    $charset = 'none'
+    if ($unicode -eq 'enabled') { $charset = 'utf8' }
+    elseif ($unicode -notin @('', 'disabled')) { throw "无法识别 P4 Unicode 模式：$unicode" }
+    $script:P4Charsets[$server] = $charset
+    Write-MergeLog "P4 服务器 $server 的字符集模式：$charset"
+    return $charset
+}
+
 function Invoke-P4 {
     param($Context, [string[]]$Command, [switch]$Write, [AllowNull()][string]$InputText)
     $hasInput = $PSBoundParameters.ContainsKey('InputText')
-    $env:P4PORT = $Context.Server
-    $env:P4CHARSET = 'utf8'
-    if ($Context.User) { $env:P4USER = $Context.User }
-    if ($Context.Client) { $env:P4CLIENT = $Context.Client }
-    $arguments = @('-p', $Context.Server, '-C', 'utf8')
-    if ($Context.User) { $arguments += @('-u', $Context.User) }
-    if ($Context.Client) { $arguments += @('-c', $Context.Client) }
+    $charset = Get-P4ServerCharset $Context
+    $arguments = @(Get-P4ConnectionArguments $Context $charset)
     if (-not $hasInput) { $arguments += @('-ztag', '-Mj') }
     $arguments += $Command
     Write-MergeLog ('p4 ' + (($arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' '))
     $timeout = $script:QueryTimeout
     if ($Write) { $timeout = $script:WriteTimeout }
-    if ($script:P4Runner) { $result = & $script:P4Runner $arguments $InputText $timeout }
-    else { $result = Invoke-P4Process $arguments $InputText $timeout }
-    if (-not $hasInput) { return ConvertFrom-P4Output $result $Command[0] }
+    $result = Invoke-P4CommandProcess $arguments $InputText $timeout
+    if (-not $hasInput) { return ConvertFrom-P4Output $result $Command[0] -RejectReplacement:($charset -eq 'none') }
     if ($result.ExitCode -ne 0) { throw "P4 创建 CL 失败：$($result.Output) $($result.Error)" }
     return $result.Output
 }
