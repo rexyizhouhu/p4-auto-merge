@@ -16,7 +16,6 @@
 p4 set P4PORT=服务器地址:1666
 p4 set P4USER=你的账号
 p4 set P4CLIENT=目标workspace名称
-p4 set P4CHARSET=utf8
 p4 login
 ```
 
