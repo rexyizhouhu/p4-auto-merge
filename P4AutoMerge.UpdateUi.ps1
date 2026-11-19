@@ -51,6 +51,7 @@ function New-UpdateDialog {
     $dialog.Size = New-Object Drawing.Size(760, 600)
     $dialog.MinimumSize = New-Object Drawing.Size(620, 440)
     $dialog.Font = $script:Controls.Main.Font
+    $dialog.Icon = $script:Controls.Main.Icon
     $dialog.StartPosition = 'CenterParent'
     $grid = New-Object Windows.Forms.TableLayoutPanel
     $grid.Dock = 'Fill'; $grid.Padding = New-Object Windows.Forms.Padding(12)

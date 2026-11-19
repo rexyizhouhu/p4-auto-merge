@@ -41,6 +41,7 @@ OutputBaseFilename={#OutputStem}
 Compression=lzma2
 SolidCompression=yes
 SetupLogging=yes
+SetupIconFile={#SourcePath}\P4AutoMerge.ico
 UninstallDisplayIcon={app}\P4AutoMerge.exe
 AppMutex=Local\FlamesTools.P4AutoMerge.Running
 CloseApplications=no

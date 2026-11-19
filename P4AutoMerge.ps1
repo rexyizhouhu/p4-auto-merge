@@ -224,8 +224,21 @@ function New-OutputPanel {
     return $tabs
 }
 
+# 界面由 powershell.exe 承载，不显式设置时标题栏和任务栏会显示 PowerShell 图标。
+function Get-AppIcon {
+    $executable = $env:P4AM_EXECUTABLE
+    if ($executable -and (Test-Path -LiteralPath $executable -PathType Leaf)) {
+        return [Drawing.Icon]::ExtractAssociatedIcon($executable)
+    }
+    $source = Join-Path $PSScriptRoot 'P4AutoMerge.ico'
+    if (Test-Path -LiteralPath $source -PathType Leaf) { return New-Object Drawing.Icon($source) }
+    return $null
+}
+
 function New-MainForm {
     $form = New-Control 'Form' 'Main' 'P4 自动合并 — 默认安全 Resolve / 手动处理冲突'
+    $icon = Get-AppIcon
+    if ($icon) { $form.Icon = $icon }
     $form.Font = New-Object Drawing.Font('Microsoft YaHei UI', 9)
     $form.Size = New-Object Drawing.Size(1220, 995)
     $form.MinimumSize = New-Object Drawing.Size(1020, 875)
@@ -270,6 +283,7 @@ function New-SelectedWindow {
     $window.Size = New-Object Drawing.Size(660, 540)
     $window.MinimumSize = New-Object Drawing.Size(420, 260)
     $window.Font = $script:Controls.Main.Font
+    $window.Icon = $script:Controls.Main.Icon
     $window.StartPosition = 'WindowsDefaultLocation'
     $text = New-Control 'TextBox' 'SelectedDetails'
     $text.Multiline = $true; $text.ReadOnly = $true

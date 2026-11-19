@@ -11,6 +11,7 @@ function Build-Launcher {
     $arguments = @('/nologo', '/target:winexe', '/platform:x64', '/optimize+', '/codepage:65001',
         '/reference:System.Windows.Forms.dll', '/reference:System.Web.Extensions.dll', "/out:$Output",
         ('/win32manifest:' + (Join-Path $PSScriptRoot 'Launcher.manifest')),
+        ('/win32icon:' + (Join-Path $PSScriptRoot 'P4AutoMerge.ico')),
         ('/resource:' + (Join-Path $PSScriptRoot 'P4AutoMerge.ps1') + ',P4AutoMerge.ps1'),
         ('/resource:' + (Join-Path $PSScriptRoot 'P4AutoMerge.Core.psm1') + ',P4AutoMerge.Core.psm1'),
         ('/resource:' + (Join-Path $PSScriptRoot 'P4AutoMerge.Update.psm1') + ',P4AutoMerge.Update.psm1'),
