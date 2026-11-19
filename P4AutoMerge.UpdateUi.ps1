@@ -5,6 +5,75 @@ $script:UpdateManual = $false
 $script:UpdatePreferences = Get-UpdatePreferences
 $script:UpdateFrequencies = @('Always', 'Weekly', 'Monthly', 'Never')
 $script:UpdateFrequencyLabels = @('每次启动都提醒', '每周提醒一次', '每月提醒一次', '永不提醒')
+$script:MarkdownHeadingScales = @(1.5, 1.3, 1.15)
+$script:MarkdownInlinePattern = '\*\*(.+?)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)\s]+)\)'
+$script:MarkdownCodeFont = 'Consolas'
+
+function New-NotesArea {
+    $frame = New-TextArea 'UpdateNotes'
+    # RichTextBox 字体变化会覆盖全部已排版文字，因此先固定字体，避免加入对话框后继承字体时冲掉标题和粗体。
+    $script:Controls.UpdateNotes.Font = $script:Controls.Main.Font
+    return $frame
+}
+
+# 支持更新日志常用的 markdown 子集：标题、列表、粗体、行内代码和链接；其余内容按原文逐行显示。
+function Write-MarkdownNotes {
+    param($Box, [string]$Markdown)
+    $Box.ReadOnly = $false
+    $Box.Clear()
+    foreach ($line in ($Markdown -split '\r?\n')) { Add-MarkdownLine $Box $line }
+    $Box.SelectionStart = 0
+    $Box.ReadOnly = $true
+}
+
+function Add-MarkdownLine {
+    param($Box, [string]$Line)
+    $font = $Box.Font
+    $text = $Line
+    if ($Line -match '^(#{1,6})\s+(.*)$') {
+        $text = $Matches[2]
+        $scale = $script:MarkdownHeadingScales[[Math]::Min($Matches[1].Length, $script:MarkdownHeadingScales.Count) - 1]
+        $font = New-Object Drawing.Font($font.FontFamily, [float]($font.Size * $scale), [Drawing.FontStyle]::Bold)
+    }
+    elseif ($Line -match '^\s*[-*+]\s+(.*)$') {
+        $text = $Matches[1]
+        Add-RichText $Box '  •  ' $font
+    }
+    Add-MarkdownInline $Box $text $font
+    Add-RichText $Box "`n" $Box.Font
+}
+
+function Add-MarkdownInline {
+    param($Box, [string]$Text, $Font)
+    $position = 0
+    foreach ($match in [regex]::Matches($Text, $script:MarkdownInlinePattern)) {
+        Add-RichText $Box $Text.Substring($position, $match.Index - $position) $Font
+        Add-MarkdownToken $Box $match $Font
+        $position = $match.Index + $match.Length
+    }
+    Add-RichText $Box $Text.Substring($position) $Font
+}
+
+function Add-MarkdownToken {
+    param($Box, $Match, $Font)
+    if ($Match.Groups[1].Success) {
+        Add-RichText $Box $Match.Groups[1].Value (New-Object Drawing.Font($Font, [Drawing.FontStyle]::Bold))
+    }
+    elseif ($Match.Groups[2].Success) {
+        Add-RichText $Box $Match.Groups[2].Value (New-Object Drawing.Font($script:MarkdownCodeFont, $Font.Size))
+    }
+    else { Add-RichText $Box ($Match.Groups[3].Value + ' (' + $Match.Groups[4].Value + ')') $Font }
+}
+
+function Add-RichText {
+    param($Box, [string]$Text, $Font)
+    if (-not $Text) { return }
+    $Box.SelectionStart = $Box.TextLength
+    $Box.SelectionLength = 0
+    $Box.SelectionFont = $Font
+    $Box.SelectionColor = $script:UiColors.Text
+    $Box.SelectedText = $Text
+}
 
 function New-UpdateBar {
     $bar = New-Control 'FlowLayoutPanel' 'UpdateBar'
@@ -67,12 +136,12 @@ function New-UpdateDialog {
     $title = New-Object Windows.Forms.Label
     $title.Dock = 'Fill'
     $title.Text = "当前版本 $(Get-UpdateVersion)。每次启动都会检查，提醒频率仅控制自动弹窗。"
-    $notes = New-Object Windows.Forms.TextBox
-    Set-ControlColors $notes
-    $notes.Multiline = $true; $notes.ReadOnly = $true; $notes.ScrollBars = 'Vertical'; $notes.Dock = 'Fill'
+    $notesArea = New-NotesArea
     if ($script:AvailableUpdate) {
         $title.Text += "`r`n发现新版 $($script:AvailableUpdate.Version)。"
-        $notes.Text = "更新日志：`r`n" + $script:AvailableUpdate.Notes
+        $markdown = [string]$script:AvailableUpdate.Notes
+        if ($markdown -notmatch '^\s*#') { $markdown = "**更新日志：**`n" + $markdown }
+        Write-MarkdownNotes $script:Controls.UpdateNotes $markdown
     }
     if (-not $env:P4AM_UPDATE_REQUEST) { $title.Text += "`r`n源码启动：点击更新打开下载页。" }
     elseif (-not (Test-Path -LiteralPath (Join-Path ([IO.Path]::GetDirectoryName($env:P4AM_EXECUTABLE)) 'unins000.exe'))) {
@@ -81,7 +150,7 @@ function New-UpdateDialog {
     $label = New-Object Windows.Forms.Label
     $label.Text = '提醒更新频率：'; $label.Dock = 'Fill'
     $combo = New-UpdateFrequencyCombo
-    $grid.Controls.Add($title, 0, 0); $grid.Controls.Add($notes, 0, 1)
+    $grid.Controls.Add($title, 0, 0); $grid.Controls.Add($notesArea, 0, 1)
     $grid.Controls.Add($label, 0, 2); $grid.Controls.Add($combo, 0, 3)
     $grid.Controls.Add((New-UpdateChoiceButtons $dialog -Settings:$Settings), 0, 4)
     $dialog.Controls.Add($grid)

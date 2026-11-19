@@ -18,6 +18,8 @@ function Write-UpdateManifest {
         digest=('sha256:' + (Get-FileHash -LiteralPath $Setup -Algorithm SHA256).Hash.ToLowerInvariant())
         browser_download_url="https://github.com/rexyizhouhu/p4-auto-merge/releases/download/v$Version/$name"
     }
-    $manifest = [ordered]@{ tag_name="v$Version"; draft=$false; prerelease=$false; body=$Notes; assets=@($asset) }
+    # 1.0.2、1.0.3 的更新窗口用普通文本框显示日志，只认 CRLF 换行。
+    $body = $Notes -replace '\r?\n', "`r`n"
+    $manifest = [ordered]@{ tag_name="v$Version"; draft=$false; prerelease=$false; body=$body; assets=@($asset) }
     [IO.File]::WriteAllText($Output, ($manifest | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding($false)))
 }

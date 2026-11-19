@@ -36,15 +36,21 @@ $script:UpdatingResolveModes = $false
 $script:UiColors = @{
     Background = [Drawing.ColorTranslator]::FromHtml('#E3EFFB')
     Field = [Drawing.ColorTranslator]::FromHtml('#F1F7FE')
-    Button = [Drawing.ColorTranslator]::FromHtml('#D4E7FA')
+    Button = [Drawing.ColorTranslator]::FromHtml('#6A92C2')
+    ButtonText = [Drawing.Color]::White
+    ButtonHover = [Drawing.ColorTranslator]::FromHtml('#5A80AE')
+    ButtonPressed = [Drawing.ColorTranslator]::FromHtml('#4C6F98')
+    ButtonDisabled = [Drawing.ColorTranslator]::FromHtml('#D5D8DC')
+    Border = [Drawing.ColorTranslator]::FromHtml('#A9C4E2')
     Divider = [Drawing.ColorTranslator]::FromHtml('#B7D3F0')
     Text = [Drawing.ColorTranslator]::FromHtml('#24364B')
-    Border = [Drawing.ColorTranslator]::FromHtml('#9DBFE4')
     Hover = [Drawing.ColorTranslator]::FromHtml('#C3DDF7')
-    Pressed = [Drawing.ColorTranslator]::FromHtml('#ADCFF2')
 }
 $script:SelectedPanelHeight = 130
 $script:ActionRowHeight = 45
+$script:OutputPages = @(@('Details', '预览 / 待手工处理'), @('Log', '运行日志'))
+$script:OutputPage = ''
+$script:OutputTabHeight = 30
 
 function New-Control {
     param([string]$Type, [string]$Name, [string]$Text = '')
@@ -106,11 +112,21 @@ function Test-FieldControl {
 function Set-ButtonColors {
     param($Control)
     $Control.UseVisualStyleBackColor = $false
-    $Control.BackColor = $script:UiColors.Button
     $Control.FlatStyle = 'Flat'
-    $Control.FlatAppearance.BorderColor = $script:UiColors.Border
-    $Control.FlatAppearance.MouseOverBackColor = $script:UiColors.Hover
-    $Control.FlatAppearance.MouseDownBackColor = $script:UiColors.Pressed
+    $Control.ForeColor = $script:UiColors.ButtonText
+    $Control.FlatAppearance.MouseOverBackColor = $script:UiColors.ButtonHover
+    $Control.FlatAppearance.MouseDownBackColor = $script:UiColors.ButtonPressed
+    Update-ButtonState $Control
+    $Control.Add_EnabledChanged({ Update-ButtonState $this })
+}
+
+# 平面按钮禁用时文字固定为系统灰色，深蓝底上看不清，因此禁用时换成浅色底。
+function Update-ButtonState {
+    param($Button)
+    $back = $script:UiColors.ButtonDisabled
+    if ($Button.Enabled) { $back = $script:UiColors.Button }
+    $Button.BackColor = $back
+    $Button.FlatAppearance.BorderColor = $back
 }
 
 function Add-FormRow {
@@ -228,6 +244,8 @@ function New-ListToolbar {
     $limit.Maximum = 1000
     $limit.Value = 1000
     $limit.Width = 70
+    # 系统上下箭头无法跟随主题配色，隐藏后仍可输入、滚轮或方向键调整。
+    $limit.Controls[0].Visible = $false
     $bar.Controls.Add($limit)
     $count = New-Control 'Label' 'SearchCount' '尚未加载来源 CL'
     $count.AutoSize = $true
@@ -253,20 +271,82 @@ function New-ActionPanel {
 }
 
 function New-OutputPanel {
-    $tabs = New-Control 'TabControl' 'Output'
-    foreach ($entry in @(@('Details', '预览 / 待手工处理'), @('Log', '运行日志'))) {
-        $page = New-Object Windows.Forms.TabPage
-        $page.Text = $entry[1]
-        Set-ControlColors $page
-        $text = New-Control 'TextBox' $entry[0]
-        $text.Multiline = $true
-        $text.ReadOnly = $true
-        $text.WordWrap = $false
-        $text.ScrollBars = 'Both'
-        $page.Controls.Add($text)
-        $tabs.TabPages.Add($page)
+    $panel = New-Control 'TableLayoutPanel' 'Output'
+    $panel.ColumnCount = 1
+    $panel.RowCount = 2
+    [void]$panel.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', $script:OutputTabHeight)))
+    [void]$panel.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
+    $strip = New-Control 'FlowLayoutPanel' 'OutputTabs'
+    $strip.WrapContents = $false
+    $strip.Margin = New-Object Windows.Forms.Padding(4, 4, 4, 0)
+    $pages = New-Control 'Panel' 'OutputPages'
+    foreach ($entry in $script:OutputPages) {
+        $strip.Controls.Add((New-OutputTab $entry[0] $entry[1]))
+        $pages.Controls.Add((New-TextArea $entry[0]))
     }
-    return $tabs
+    $panel.Controls.Add($strip, 0, 0)
+    $panel.Controls.Add($pages, 0, 1)
+    Show-OutputPage 'Details'
+    return $panel
+}
+
+function New-OutputTab {
+    param([string]$Page, [string]$Caption)
+    $tab = New-Control 'Button' ($Page + 'Tab') $Caption
+    $tab.AutoSize = $true
+    $tab.Dock = 'None'
+    $tab.Margin = New-Object Windows.Forms.Padding(0, 0, 4, 0)
+    $tab.Tag = $Page
+    $tab.Add_Click({ Show-OutputPage ([string]$this.Tag) })
+    return $tab
+}
+
+# 系统多行文本框的立体边框和常驻滚动条无法跟随主题，因此在面板上绘制 1 像素主题色边框、内含无边框的 RichTextBox，滚动条仅在内容超出时出现。
+function New-TextArea {
+    param([string]$Name)
+    $frame = New-Control 'Panel' ($Name + 'Frame')
+    $frame.Padding = New-Object Windows.Forms.Padding(6, 4, 1, 1)
+    $frame.BackColor = $script:UiColors.Field
+    $frame.Add_Paint({
+        [Windows.Forms.ControlPaint]::DrawBorder($_.Graphics, $this.ClientRectangle, $script:UiColors.Border, 'Solid')
+    })
+    $text = New-Control 'RichTextBox' $Name
+    Set-PlainRichText $text
+    $text.Margin = New-Object Windows.Forms.Padding(0)
+    $frame.Controls.Add($text)
+    return $frame
+}
+
+# 默认 AutoFont 会为中文切换字体并把行高从 17 拉到 23 像素，UIFonts 保持与普通文本框一致的行高。
+function Set-PlainRichText {
+    param($Box)
+    $Box.ReadOnly = $true
+    $Box.DetectUrls = $false
+    $Box.BorderStyle = 'None'
+    $Box.ScrollBars = 'Vertical'
+    $Box.LanguageOption = 'UIFonts'
+}
+
+function Show-OutputPage {
+    param([string]$Name)
+    foreach ($entry in $script:OutputPages) {
+        $selected = $entry[0] -eq $Name
+        $script:Controls[$entry[0] + 'Frame'].Visible = $selected
+        Set-OutputTabColors $script:Controls[$entry[0] + 'Tab'] $selected
+    }
+    $script:OutputPage = $Name
+}
+
+function Set-OutputTabColors {
+    param($Tab, [bool]$Selected)
+    $back = $script:UiColors.Background
+    $border = $script:UiColors.Background
+    if ($Selected) { $back = $script:UiColors.Field; $border = $script:UiColors.Border }
+    $Tab.BackColor = $back
+    $Tab.ForeColor = $script:UiColors.Text
+    $Tab.FlatAppearance.BorderColor = $border
+    $Tab.FlatAppearance.MouseOverBackColor = $script:UiColors.Hover
+    $Tab.FlatAppearance.MouseDownBackColor = $script:UiColors.Hover
 }
 
 # 界面由 powershell.exe 承载，不显式设置时标题栏和任务栏会显示 PowerShell 图标。
@@ -324,10 +404,7 @@ function Update-ResolveLabels {
 
 function New-SelectedPanel {
     $group = New-Control 'GroupBox' 'SelectedGroup' '已选择的 CL — 自动刷新'
-    $text = New-Control 'TextBox' 'SelectedDetails'
-    $text.Multiline = $true; $text.ReadOnly = $true
-    $text.ScrollBars = 'Both'; $text.WordWrap = $false
-    $group.Controls.Add($text)
+    $group.Controls.Add((New-TextArea 'SelectedDetails'))
     return $group
 }
 
@@ -694,7 +771,7 @@ function Show-Preview {
     if ($count -gt $shown) { $lines.Add("界面仅显示前 $shown 个文件，共 $count 个；实际操作不截断。") }
     if ($messageBudget.Omitted -gt 0) { $lines.Add("已省略 $($messageBudget.Omitted) 条 P4 消息，请查看运行日志；文件及队列数据不截断。") }
     $script:Controls.Details.Lines = $lines.ToArray()
-    $script:Controls.Output.SelectedTab = $script:Controls.Details.Parent
+    Show-OutputPage 'Details'
     $script:Controls.Start.Enabled = $count -gt 0
     $script:Controls.Status.Text = "预览完成：$($Preview.Changes.Count) 个 CL，$count 个文件操作（同一文件可重复出现）。"
 }
@@ -761,7 +838,7 @@ function Show-Session {
     if (@($State.Unresolved).Count -gt $script:DetailLimit) { $lines.Add('界面仅显示前 2000 项，请在 P4V 查看全部文件。') }
     if ($State.LastError) { $lines.Add("错误：$($State.LastError)") }
     $script:Controls.Details.Lines = $lines.ToArray()
-    $script:Controls.Output.SelectedTab = $script:Controls.Details.Parent
+    Show-OutputPage 'Details'
     $script:Controls.Status.Text = Get-SessionStatus $State
 }
 
@@ -822,7 +899,7 @@ function Show-UiError {
     $script:LastOperationError = $Message
     $script:Controls.Status.Text = '操作停止：' + $Message
     $script:Controls.Log.AppendText("`r`n[错误] $Message`r`n")
-    $script:Controls.Output.SelectedTab = $script:Controls.Log.Parent
+    Show-OutputPage 'Log'
     Reset-Preview
 }
 
@@ -1080,7 +1157,7 @@ function Test-ResolveControls {
     if ($combo.Enabled -or -not $script:Controls.Resume.Enabled) { throw 'Saved resolve mode not locked or force review cannot continue' }
     Show-Session $null
     $combo.SelectedIndex = 0
-    if ($script:Controls.ContainsKey('SelectedWindow') -or $script:Controls.Output.TabPages.Count -ne 2 -or
+    if ($script:Controls.ContainsKey('SelectedWindow') -or $script:Controls.OutputPages.Controls.Count -ne 2 -or
         $script:Controls.SelectedDetails.FindForm() -ne $script:Controls.Main -or
         $script:Controls.SelectedGroup.Parent -ne $script:Controls.SelectionHost) { throw 'Selected CL overview is not embedded below the action buttons' }
     Write-Output 'Resolve controls passed: P4 labels with streams, safe default, invalidation, saved mode lock and embedded selected CL panel.'
@@ -1092,7 +1169,7 @@ function Test-UpdateControls {
     $oldPath=& $module { $script:PreferencesPath }
     $path=Join-Path $env:TEMP ('P4AutoMerge-UpdateUiTest-' + [guid]::NewGuid().ToString('N') + '/settings.json')
     & $module { param($p) $script:PreferencesPath=$p } $path
-    $script:AvailableUpdate=[pscustomobject]@{Version='9.0.0'; Notes='Test update log'; Page='https://github.com/rexyizhouhu/p4-auto-merge/releases/tag/v9.0.0'}
+    $script:AvailableUpdate=[pscustomobject]@{Version='9.0.0'; Notes="## 9.0.0`n- **Test** update log`r`n- run ``p4 info``"; Page='https://github.com/rexyizhouhu/p4-auto-merge/releases/tag/v9.0.0'}
     $script:UpdatePreferences=[pscustomobject]@{Frequency='Always'; SkippedVersion=''; LastPromptUtc=''}
     $dialog=New-UpdateDialog
     try {
@@ -1100,7 +1177,8 @@ function Test-UpdateControls {
         $grid=$dialog.Form.Controls[0]
         $buttons=@($grid.Controls[4].Controls | ForEach-Object { $_.Text })
         if (($buttons -join ',') -ne '更新,取消,跳过此版本' -or $dialog.Frequency.Items.Count -ne 4 -or
-            -not $grid.Controls[1].Text.Contains('Test update log')) { throw 'Update dialog choices, frequency or notes missing' }
+            -not $script:Controls.UpdateNotes.Text.Contains('Test update log')) { throw 'Update dialog choices, frequency or notes missing' }
+        Test-MarkdownNotes $script:Controls.UpdateNotes
         Save-UpdateChoice 'Ignore' 1
         $saved=Get-UpdatePreferences
         if ($saved.Frequency -ne 'Weekly' -or $saved.SkippedVersion -ne '9.0.0') { throw 'Skip did not save frequency and version' }
@@ -1111,7 +1189,21 @@ function Test-UpdateControls {
         $dialog.Form.Dispose(); $script:AvailableUpdate=$savedRelease; $script:UpdatePreferences=$savedPreferences
         & $module { param($p) $script:PreferencesPath=$p } $oldPath
     }
-    Write-Output 'Update dialog passed hidden checks: release notes, update/cancel/skip, four frequencies, settings persisted on skip/cancel. No dialog displayed.'
+    Write-Output 'Update dialog passed hidden checks: markdown release notes, update/cancel/skip, four frequencies, settings persisted on skip/cancel. No dialog displayed.'
+}
+
+function Test-MarkdownNotes {
+    param($Box)
+    $lines = @($Box.Lines | Where-Object { $_ })
+    if (($lines -join '|') -cne '9.0.0|  •  Test update log|  •  run p4 info') {
+        throw "Markdown notes were not split into rendered lines: $($lines -join '|')"
+    }
+    $Box.Select($Box.Text.IndexOf('Test'), 4)
+    $bold = $Box.SelectionFont.Bold
+    $Box.Select($Box.Text.IndexOf('9.0.0'), 5)
+    if (-not $bold -or -not $Box.SelectionFont.Bold -or $Box.SelectionFont.Size -le $Box.Font.Size) {
+        throw 'Markdown bold text or heading style was not rendered'
+    }
 }
 
 function Test-UpdateHandoff {
@@ -1175,7 +1267,7 @@ function Test-WorkerCompletion {
     if ($script:LastOperationError -notmatch 'Simulated workspace mismatch' -or -not $script:Controls.Settings.Enabled) {
         throw 'Failed worker did not restore UI or show inline error'
     }
-    if ($script:Controls.Output.SelectedTab -ne $script:Controls.Log.Parent) { throw 'Runtime error did not select the log tab' }
+    if ($script:OutputPage -ne 'Log') { throw 'Runtime error did not select the log tab' }
     Write-Output 'Worker error regression passed: nested timer updates complete/dispose once, inline error, no popup.'
 }
 
@@ -1252,7 +1344,7 @@ function Test-SelectedOverview {
     if ($script:Controls.Start.Enabled) { throw 'Changing selection retained an executable preview' }
     $script:Controls.ManualChanges.Clear()
     Test-SelectedOverviewBounds
-    $script:Controls.Output.SelectedTab = $script:Controls.Details.Parent
+    Show-OutputPage 'Details'
     Test-TerminalRecovery
     Write-Output 'Selected CL overview passed: hidden checks, manual union/dedup, author/description, order and invalid input.'
 }
@@ -1314,7 +1406,7 @@ function Test-SavedSelectedPreview {
     if (-not $text.Contains('已选 CL：2 个') -or -not $text.Contains('活动队列保存')) {
         throw 'Active queue selected overview did not use saved CLs'
     }
-    $script:Controls.Output.SelectedTab = $script:Controls.Details.Parent
+    Show-OutputPage 'Details'
 }
 
 function Test-StartupConnection {
