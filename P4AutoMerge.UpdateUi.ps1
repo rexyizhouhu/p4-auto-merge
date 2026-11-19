@@ -20,6 +20,7 @@ function New-UpdateBar {
 
 function New-UpdateFrequencyCombo {
     $combo = New-Object Windows.Forms.ComboBox
+    Set-ControlColors $combo
     $combo.DropDownStyle = 'DropDownList'
     $combo.Dock = 'Fill'
     $combo.Items.AddRange([object[]]$script:UpdateFrequencyLabels)
@@ -35,6 +36,7 @@ function New-UpdateChoiceButtons {
     if ($Settings) { $entries = @(@('检查更新', 'Yes'), @('保存', 'OK'), @('取消', 'Cancel')) }
     foreach ($entry in $entries) {
         $button = New-Object Windows.Forms.Button
+        Set-ControlColors $button
         $button.Text = $entry[0]
         $button.AutoSize = $true
         $button.DialogResult = $entry[1]
@@ -47,6 +49,7 @@ function New-UpdateChoiceButtons {
 function New-UpdateDialog {
     param([switch]$Settings)
     $dialog = New-Object Windows.Forms.Form
+    Set-ControlColors $dialog
     $dialog.Text = 'P4 自动合并 — 版本更新'
     $dialog.Size = New-Object Drawing.Size(760, 600)
     $dialog.MinimumSize = New-Object Drawing.Size(620, 440)
@@ -65,6 +68,7 @@ function New-UpdateDialog {
     $title.Dock = 'Fill'
     $title.Text = "当前版本 $(Get-UpdateVersion)。每次启动都会检查，提醒频率仅控制自动弹窗。"
     $notes = New-Object Windows.Forms.TextBox
+    Set-ControlColors $notes
     $notes.Multiline = $true; $notes.ReadOnly = $true; $notes.ScrollBars = 'Vertical'; $notes.Dock = 'Fill'
     if ($script:AvailableUpdate) {
         $title.Text += "`r`n发现新版 $($script:AvailableUpdate.Version)。"

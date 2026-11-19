@@ -34,13 +34,17 @@ $script:SelectedPreviewBuildCount = 0
 $script:ResolveModes = @(Get-ResolveModes)
 $script:UpdatingResolveModes = $false
 $script:UiColors = @{
-    Panel = [Drawing.ColorTranslator]::FromHtml('#F2F6FC')
-    Divider = [Drawing.ColorTranslator]::FromHtml('#D4E0EF')
+    Background = [Drawing.ColorTranslator]::FromHtml('#E3EFFB')
+    Field = [Drawing.ColorTranslator]::FromHtml('#F1F7FE')
+    Button = [Drawing.ColorTranslator]::FromHtml('#D4E7FA')
+    Divider = [Drawing.ColorTranslator]::FromHtml('#B7D3F0')
     Text = [Drawing.ColorTranslator]::FromHtml('#24364B')
-    Border = [Drawing.ColorTranslator]::FromHtml('#C5D4E5')
-    Hover = [Drawing.ColorTranslator]::FromHtml('#E5EFFC')
-    Pressed = [Drawing.ColorTranslator]::FromHtml('#D5E5FA')
+    Border = [Drawing.ColorTranslator]::FromHtml('#9DBFE4')
+    Hover = [Drawing.ColorTranslator]::FromHtml('#C3DDF7')
+    Pressed = [Drawing.ColorTranslator]::FromHtml('#ADCFF2')
 }
+$script:SelectedPanelHeight = 130
+$script:ActionRowHeight = 45
 
 function New-Control {
     param([string]$Type, [string]$Name, [string]$Text = '')
@@ -54,15 +58,55 @@ function New-Control {
     return $control
 }
 
+# 面板、标签、复选框等未显式设置底色的控件继承父容器底色，因此只需给窗口、标签页和输入类控件上色。
 function Set-ControlColors {
     param($Control)
     $Control.ForeColor = $script:UiColors.Text
-    if ($Control -is [Windows.Forms.TextBox] -or $Control -is [Windows.Forms.ListView]) {
-        $Control.BackColor = [Drawing.Color]::White
+    if ($Control -is [Windows.Forms.Button]) { Set-ButtonColors $Control; return }
+    if ($Control -is [Windows.Forms.Form] -or $Control -is [Windows.Forms.TabPage]) {
+        $Control.BackColor = $script:UiColors.Background
+        return
     }
-    if ($Control -isnot [Windows.Forms.Button]) { return }
+    if (-not (Test-FieldControl $Control)) { return }
+    $Control.BackColor = $script:UiColors.Field
+    if ($Control -is [Windows.Forms.ComboBox]) { Set-ComboColors $Control }
+}
+
+# 带视觉样式的下拉列表忽略 BackColor，自绘选中项和下拉项才能显示浅蓝底色。
+function Set-ComboColors {
+    param($Combo)
+    $Combo.FlatStyle = 'Flat'
+    $Combo.DrawMode = 'OwnerDrawFixed'
+    $Combo.Add_DrawItem({ Write-ComboItem $this $_ })
+}
+
+function Write-ComboItem {
+    param($Combo, $Event)
+    $selected = ($Event.State -band [Windows.Forms.DrawItemState]::Selected) -ne 0
+    $back = $script:UiColors.Field
+    if (-not $Combo.Enabled) { $back = $script:UiColors.Background }
+    elseif ($selected) { $back = $script:UiColors.Hover }
+    $brush = New-Object Drawing.SolidBrush($back)
+    try { $Event.Graphics.FillRectangle($brush, $Event.Bounds) }
+    finally { $brush.Dispose() }
+    if ($Event.Index -lt 0) { return }
+    $fore = $script:UiColors.Text
+    if (-not $Combo.Enabled) { $fore = [Drawing.SystemColors]::GrayText }
+    $flags = [Windows.Forms.TextFormatFlags]'VerticalCenter, Left, EndEllipsis, NoPrefix'
+    [Windows.Forms.TextRenderer]::DrawText($Event.Graphics, $Combo.GetItemText($Combo.Items[$Event.Index]),
+        $Combo.Font, $Event.Bounds, $fore, $flags)
+}
+
+function Test-FieldControl {
+    param($Control)
+    return ($Control -is [Windows.Forms.TextBoxBase] -or $Control -is [Windows.Forms.ListView] -or
+        $Control -is [Windows.Forms.ComboBox] -or $Control -is [Windows.Forms.NumericUpDown])
+}
+
+function Set-ButtonColors {
+    param($Control)
     $Control.UseVisualStyleBackColor = $false
-    $Control.BackColor = [Drawing.Color]::White
+    $Control.BackColor = $script:UiColors.Button
     $Control.FlatStyle = 'Flat'
     $Control.FlatAppearance.BorderColor = $script:UiColors.Border
     $Control.FlatAppearance.MouseOverBackColor = $script:UiColors.Hover
@@ -144,6 +188,7 @@ function New-SearchToolbar {
     $bar = New-Control 'TableLayoutPanel' 'SearchToolbar'
     $bar.ColumnCount = 5
     $bar.RowCount = 1
+    [void]$bar.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
     foreach ($width in @(165, 0, 90, 75, 225)) {
         $style = New-Object Windows.Forms.ColumnStyle('Absolute', $width)
         if ($width -eq 0) { $style.SizeType = 'Percent'; $style.Width = 100 }
@@ -156,7 +201,7 @@ function New-SearchToolbar {
     $search.AccessibleName = '仅搜索 CL 编号和提交人；输入完整提交人账号时优先精确筛选'
     $bar.Controls.Add($search, 1, 0)
     $clear = New-Control 'Button' 'ClearSearch' '清除搜索'
-    $clear.AutoSize = $true
+    $clear.Margin = New-Object Windows.Forms.Padding(4, 0, 4, 0)
     $bar.Controls.Add($clear, 2, 0)
     $caption = New-Control 'Label' 'ManualLabel' '手动 CL：'
     $caption.TextAlign = 'MiddleLeft'
@@ -212,7 +257,7 @@ function New-OutputPanel {
     foreach ($entry in @(@('Details', '预览 / 待手工处理'), @('Log', '运行日志'))) {
         $page = New-Object Windows.Forms.TabPage
         $page.Text = $entry[1]
-        $page.BackColor = [Drawing.Color]::White
+        Set-ControlColors $page
         $text = New-Control 'TextBox' $entry[0]
         $text.Multiline = $true
         $text.ReadOnly = $true
@@ -241,7 +286,7 @@ function New-MainForm {
     if ($icon) { $form.Icon = $icon }
     $form.Font = New-Object Drawing.Font('Microsoft YaHei UI', 9)
     $form.Size = New-Object Drawing.Size(1220, 995)
-    $form.MinimumSize = New-Object Drawing.Size(1020, 875)
+    $form.MinimumSize = New-Object Drawing.Size(1020, 955)
     $form.StartPosition = 'CenterScreen'
     $layout = New-Control 'TableLayoutPanel' 'Layout'
     $layout.ColumnCount = 1
@@ -257,7 +302,6 @@ function New-MainForm {
     $layout.Controls.Add($status, 0, 2)
     $layout.Controls.Add((New-UpdateBar), 0, 3)
     $form.Controls.Add($layout)
-    New-SelectedWindow
     Update-ResolveLabels
     return $form
 }
@@ -278,23 +322,13 @@ function Update-ResolveLabels {
     finally { $combo.EndUpdate(); $script:UpdatingResolveModes = $false }
 }
 
-function New-SelectedWindow {
-    $window = New-Control 'Form' 'SelectedWindow' '已选择的 CL — 自动刷新'
-    $window.Size = New-Object Drawing.Size(660, 540)
-    $window.MinimumSize = New-Object Drawing.Size(420, 260)
-    $window.Font = $script:Controls.Main.Font
-    $window.Icon = $script:Controls.Main.Icon
-    $window.StartPosition = 'WindowsDefaultLocation'
+function New-SelectedPanel {
+    $group = New-Control 'GroupBox' 'SelectedGroup' '已选择的 CL — 自动刷新'
     $text = New-Control 'TextBox' 'SelectedDetails'
     $text.Multiline = $true; $text.ReadOnly = $true
     $text.ScrollBars = 'Both'; $text.WordWrap = $false
-    $window.Controls.Add($text)
-    $window.Add_FormClosing({
-        if ($_.CloseReason -eq 'UserClosing' -and -not $script:Controls.Main.IsDisposed) {
-            $_.Cancel = $true
-            $this.WindowState = 'Minimized'
-        }
-    })
+    $group.Controls.Add($text)
+    return $group
 }
 
 function New-ResizableContent {
@@ -302,20 +336,22 @@ function New-ResizableContent {
     $split.Orientation = 'Horizontal'
     $split.Size = New-Object Drawing.Size(1100, 550)
     $split.SplitterWidth = 6
-    $split.Panel1MinSize = 300
+    $split.Panel1MinSize = 400
     $split.Panel2MinSize = 110
-    $split.SplitterDistance = 350
+    $split.SplitterDistance = 400
     $split.BackColor = $script:UiColors.Divider
-    $split.Panel1.BackColor = $script:UiColors.Panel
-    $split.Panel2.BackColor = [Drawing.Color]::White
+    $split.Panel1.BackColor = $script:UiColors.Background
+    $split.Panel2.BackColor = $script:UiColors.Background
     $split.AccessibleName = '上下拖动分隔条，调整来源 CL 列表和下方预览的高度'
     $hostPanel = New-Control 'TableLayoutPanel' 'SelectionHost'
     $hostPanel.ColumnCount = 1
-    $hostPanel.RowCount = 2
+    $hostPanel.RowCount = 3
     [void]$hostPanel.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
-    [void]$hostPanel.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', 75)))
+    [void]$hostPanel.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', $script:ActionRowHeight)))
+    [void]$hostPanel.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', $script:SelectedPanelHeight)))
     $hostPanel.Controls.Add((New-SelectionPanel), 0, 0)
     $hostPanel.Controls.Add((New-ActionPanel), 0, 1)
+    $hostPanel.Controls.Add((New-SelectedPanel), 0, 2)
     $split.Panel1.Controls.Add($hostPanel)
     $split.Panel2.Controls.Add((New-OutputPanel))
     return $split
@@ -852,7 +888,6 @@ function Register-UiEvents {
     $script:Controls.Main.Add_Shown({
         if (-not ($SmokeTest -or $HeadlessTest -or $ReadOnlyStartupTest)) {
             Update-SelectedPreview
-            $script:Controls.SelectedWindow.Show($script:Controls.Main)
             Start-InitialConnection
             Start-UpdateOperation 'Check'
         }
@@ -895,7 +930,7 @@ function Start-MergeUi {
     }
     finally {
         $timer.Stop(); $timer.Dispose(); Stop-UpdateWorker
-        $script:Controls.SelectedWindow.Dispose(); $form.Dispose()
+        $form.Dispose()
     }
 }
 
@@ -1045,9 +1080,10 @@ function Test-ResolveControls {
     if ($combo.Enabled -or -not $script:Controls.Resume.Enabled) { throw 'Saved resolve mode not locked or force review cannot continue' }
     Show-Session $null
     $combo.SelectedIndex = 0
-    if ($script:Controls.ContainsKey('SelectedView') -or $script:Controls.Output.TabPages.Count -ne 2 -or
-        $script:Controls.SelectedDetails.Parent -ne $script:Controls.SelectedWindow) { throw 'Selected CL overview is not a separate window' }
-    Write-Output 'Resolve controls passed: P4 labels with streams, safe default, invalidation, saved mode lock and independent selected CL window.'
+    if ($script:Controls.ContainsKey('SelectedWindow') -or $script:Controls.Output.TabPages.Count -ne 2 -or
+        $script:Controls.SelectedDetails.FindForm() -ne $script:Controls.Main -or
+        $script:Controls.SelectedGroup.Parent -ne $script:Controls.SelectionHost) { throw 'Selected CL overview is not embedded below the action buttons' }
+    Write-Output 'Resolve controls passed: P4 labels with streams, safe default, invalidation, saved mode lock and embedded selected CL panel.'
 }
 
 function Test-UpdateControls {
