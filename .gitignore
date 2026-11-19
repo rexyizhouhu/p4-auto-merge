@@ -1,0 +1,23 @@
+# Reproducible release outputs are distributed as release assets.
+/Releases/
+
+# Personal configuration, credentials, diagnostics and local build caches.
+/.codex/
+/.agents/
+/.env*
+/.venv/
+/node_modules/
+/Diagnostics/
+/Runtime/
+*.log
+*.tmp
+*.bak
+*.key
+*.pem
+*.pfx
+*.p12
+*credentials*
+*tickets*
+
+# Internal development investigation notes.
+/PLAN.md
