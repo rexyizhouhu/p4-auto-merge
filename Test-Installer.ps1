@@ -48,6 +48,7 @@ function Assert-InstalledPackage {
     }
     finally { $key.Dispose() }
     $shell = New-Object -ComObject WScript.Shell
+    $explorer = New-Object -ComObject Shell.Application
     try {
         foreach ($relative in @('Desktop/P4 自动合并工具.lnk', 'StartMenu/P4 自动合并工具.lnk')) {
             $path = Join-Path $script:TestRoot $relative
@@ -55,10 +56,16 @@ function Assert-InstalledPackage {
             $link = $shell.CreateShortcut($path)
             if ($link.TargetPath -ine (Join-Path $script:InstallDir 'P4AutoMerge.exe') -or $link.WorkingDirectory -ine $script:InstallDir) { throw '快捷方式目标或工作目录错误。' }
             [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($link)
+            # 任务栏按应用身份合并按钮、决定图标；快捷方式必须与界面进程声明的身份一致。
+            $item = $explorer.NameSpace([IO.Path]::GetDirectoryName($path)).ParseName([IO.Path]::GetFileName($path))
+            if ([string]$item.ExtendedProperty('System.AppUserModel.ID') -cne 'FlamesTools.P4AutoMerge') { throw "快捷方式缺少任务栏应用身份：$relative" }
         }
     }
-    finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) }
-    Write-Output 'PASS install: exact payload, HKCU uninstall entry, desktop/start menu shortcut targets.'
+    finally {
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($explorer)
+    }
+    Write-Output 'PASS install: exact payload, HKCU uninstall entry, desktop/start menu shortcut targets and taskbar identity.'
 }
 
 function Remove-ValidationInstallation {

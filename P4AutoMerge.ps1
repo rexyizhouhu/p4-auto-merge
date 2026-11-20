@@ -4,6 +4,21 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+
+# 界面由 powershell.exe 承载，任务栏默认按 powershell.exe 归组并显示其图标；必须在创建任何窗口前声明本工具的应用身份，
+# 并与安装器快捷方式的 AppUserModelID 一致，任务栏才显示工具图标、固定后也能与运行中的窗口合并。
+# 用 Reflection.Emit 声明 P/Invoke，避免每次启动都调用 C# 编译器。
+function Set-AppUserModelId {
+    param([string]$Id)
+    $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object Reflection.AssemblyName('P4AutoMerge.Shell')), 'Run')
+    $type = $assembly.DefineDynamicModule('P4AutoMerge.Shell').DefineType('Shell32', 'Public, Class')
+    [void]$type.DefinePInvokeMethod('SetCurrentProcessExplicitAppUserModelID', 'shell32.dll', 'Public, Static, PinvokeImpl',
+        'Standard', [int], [Type[]]@([string]), 'Winapi', 'Unicode')
+    $result = $type.CreateType()::SetCurrentProcessExplicitAppUserModelID($Id)
+    if ($result -ne 0) { throw "设置任务栏应用身份失败：0x$($result.ToString('X8'))" }
+}
+$script:AppUserModelId = 'FlamesTools.P4AutoMerge'
+try { Set-AppUserModelId $script:AppUserModelId } catch { }
 Import-Module (Join-Path $PSScriptRoot 'P4AutoMerge.Core.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'P4AutoMerge.Update.psm1') -Force
 . (Join-Path $PSScriptRoot 'P4AutoMerge.UpdateUi.ps1')
@@ -56,6 +71,9 @@ $script:UiThemeName = ''
 $script:UiColors = @{}
 $script:NativeThemeLoaded = $false
 $script:SelectedPanelHeight = 130
+$script:SelectedMinHeight = 60
+$script:ListMinHeight = 130
+$script:SplitterWidth = 6
 $script:ActionRowHeight = 45
 $script:OutputPages = @(@('Details', '预览 / 待手工处理'), @('Log', '运行日志'))
 $script:OutputPage = ''
@@ -122,7 +140,12 @@ function Update-ControlColors {
     if ($Control -is [Windows.Forms.Form] -or $Control -is [Windows.Forms.SplitterPanel]) {
         $Control.BackColor = $script:UiColors.Background
     }
-    elseif ($Control -is [Windows.Forms.SplitContainer]) { $Control.BackColor = $script:UiColors.Divider }
+    elseif ($Control -is [Windows.Forms.SplitContainer]) {
+        # 两侧面板默认继承分隔条颜色，需单独设为底色，只让中间的分隔条显示分隔色。
+        $Control.BackColor = $script:UiColors.Divider
+        $Control.Panel1.BackColor = $script:UiColors.Background
+        $Control.Panel2.BackColor = $script:UiColors.Background
+    }
     elseif ((Test-FieldControl $Control) -or $Control.Tag -eq 'TextFrame') { $Control.BackColor = $script:UiColors.Field }
     # 系统网格线固定为浅灰，深色主题下会形成刺眼的白线。
     if ($Control -is [Windows.Forms.ListView]) { $Control.GridLines = -not $script:UiColors.Dark }
@@ -586,25 +609,37 @@ function New-ResizableContent {
     $split = New-Control 'SplitContainer' 'ContentSplit'
     $split.Orientation = 'Horizontal'
     $split.Size = New-Object Drawing.Size(1100, 550)
-    $split.SplitterWidth = 6
-    $split.Panel1MinSize = 400
+    $split.SplitterWidth = $script:SplitterWidth
+    # 上半区最小高度取内层两块的最小高度之和，窗口最小时两条分隔条仍都有拖动余量。
+    $split.Panel1MinSize = $script:ListMinHeight + $script:SplitterWidth + $script:ActionRowHeight + $script:SelectedMinHeight
     $split.Panel2MinSize = 110
     $split.SplitterDistance = 400
-    $split.BackColor = $script:UiColors.Divider
-    $split.Panel1.BackColor = $script:UiColors.Background
-    $split.Panel2.BackColor = $script:UiColors.Background
-    $split.AccessibleName = '上下拖动分隔条，调整来源 CL 列表和下方预览的高度'
+    $split.AccessibleName = '上下拖动分隔条，调整已选择的 CL 和下方预览的高度'
+    $split.Panel1.Controls.Add((New-SelectionSplit))
+    $split.Panel2.Controls.Add((New-OutputPanel))
+    return $split
+}
+
+function New-SelectionSplit {
+    $split = New-Control 'SplitContainer' 'SelectionSplit'
+    $split.Orientation = 'Horizontal'
+    $split.Size = New-Object Drawing.Size(1100, 400)
+    $split.SplitterWidth = $script:SplitterWidth
+    $split.Panel1MinSize = $script:ListMinHeight
+    $split.Panel2MinSize = $script:ActionRowHeight + $script:SelectedMinHeight
+    # 窗口变高时由来源 CL 列表获得新增空间，已选择的 CL 保持用户拖出的高度。
+    $split.FixedPanel = 'Panel2'
+    $split.SplitterDistance = 400 - $script:SplitterWidth - $script:ActionRowHeight - $script:SelectedPanelHeight
+    $split.AccessibleName = '上下拖动分隔条，调整来源 CL 列表和已选择的 CL 的高度'
     $hostPanel = New-Control 'TableLayoutPanel' 'SelectionHost'
     $hostPanel.ColumnCount = 1
-    $hostPanel.RowCount = 3
-    [void]$hostPanel.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
+    $hostPanel.RowCount = 2
     [void]$hostPanel.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', $script:ActionRowHeight)))
-    [void]$hostPanel.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', $script:SelectedPanelHeight)))
-    $hostPanel.Controls.Add((New-SelectionPanel), 0, 0)
-    $hostPanel.Controls.Add((New-ActionPanel), 0, 1)
-    $hostPanel.Controls.Add((New-SelectedPanel), 0, 2)
-    $split.Panel1.Controls.Add($hostPanel)
-    $split.Panel2.Controls.Add((New-OutputPanel))
+    [void]$hostPanel.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
+    $hostPanel.Controls.Add((New-ActionPanel), 0, 0)
+    $hostPanel.Controls.Add((New-SelectedPanel), 0, 1)
+    $split.Panel1.Controls.Add((New-SelectionPanel))
+    $split.Panel2.Controls.Add($hostPanel)
     return $split
 }
 
@@ -1205,8 +1240,8 @@ function Test-UiLayout {
 
 function Test-ResizableContent {
     if ($script:Controls.Limit.Value -ne 1000) { throw 'Default source CL count is not 1000' }
-    $split = $script:Controls.ContentSplit
-    $original = $split.SplitterDistance
+    $splits = @($script:Controls.ContentSplit, $script:Controls.SelectionSplit)
+    $originals = @($splits | ForEach-Object { $_.SplitterDistance })
     $form = $script:Controls.Main
     $originalSize = $form.Size
     try {
@@ -1215,15 +1250,15 @@ function Test-ResizableContent {
             $form.PerformLayout()
             Test-CompactSearchRow
             Test-ListToolbarAlignment
-            Test-SplitterRange $split
+            foreach ($split in $splits) { Test-SplitterRange $split }
         }
     }
     finally {
         $form.Size = $originalSize
         $form.PerformLayout()
-        $split.SplitterDistance = $original
+        for ($index = 0; $index -lt $splits.Count; $index++) { $splits[$index].SplitterDistance = $originals[$index] }
     }
-    Write-Output 'Resizable preview passed: default 1000 CLs, movable divider and a complete CL row at minimum window/split size.'
+    Write-Output 'Resizable preview passed: default 1000 CLs, both dividers movable and a complete CL row at minimum window/split size.'
 }
 
 function Test-ListToolbarAlignment {
@@ -1281,7 +1316,7 @@ function Test-SplitterRange {
     $minimum = $Split.Panel1MinSize
     $maximum = [Math]::Min($Split.Height - $Split.SplitterWidth - $Split.Panel2MinSize, $minimum + 80)
     if ($Split.IsSplitterFixed -or $Split.Orientation -ne 'Horizontal' -or $maximum -le $minimum) {
-        throw 'Vertical preview resizing is not available'
+        throw "Vertical resizing is not available: $($Split.Name)"
     }
     $Split.SplitterDistance = $minimum
     $Split.PerformLayout()
@@ -1289,7 +1324,7 @@ function Test-SplitterRange {
     Test-MinimumClRow
     $Split.SplitterDistance = $maximum
     $Split.PerformLayout()
-    if ($Split.Panel2.Height -ge $larger) { throw 'Preview height did not follow splitter position' }
+    if ($Split.Panel2.Height -ge $larger) { throw "Lower pane height did not follow splitter position: $($Split.Name)" }
 }
 
 function Test-MinimumClRow {
@@ -1410,6 +1445,7 @@ function Test-UpdateControls {
 function Test-ThemeControls {
     $original = $script:UiThemeName
     $controls = $script:Controls
+    Test-AppUserModelId
     try {
         Set-UiTheme ''
         if ($script:UiThemeName -ne 'LightModern' -or @($script:UiThemes.Keys)[0] -ne 'LightModern') {
@@ -1446,12 +1482,26 @@ function Test-ThemeControls {
     Write-Output "Themes passed: top-left settings menu, bottom check update, $($script:UiThemes.Count) themes applied live and previewed from settings."
 }
 
+# 任务栏按进程的应用身份显示图标；身份必须与安装器快捷方式一致，否则显示 powershell.exe 的图标。
+function Test-AppUserModelId {
+    Add-Type -Namespace P4AutoMergeTest -Name AppId -MemberDefinition @'
+[DllImport("shell32.dll")] public static extern int GetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] out string id);
+'@
+    $id = $null
+    [void][P4AutoMergeTest.AppId]::GetCurrentProcessExplicitAppUserModelID([ref]$id)
+    $installer = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Installer.iss') -Raw -ErrorAction SilentlyContinue
+    if ($id -cne $script:AppUserModelId) { throw "Taskbar identity is not set: $id" }
+    if ($installer -and @([regex]::Matches($installer, 'AppUserModelID: "' + [regex]::Escape($id) + '"')).Count -ne 2) {
+        throw 'Installer shortcuts do not share the taskbar identity'
+    }
+}
+
 function Test-ThemeColors {
     param([string]$Name)
     $colors = $script:UiColors
     $expected = @(
         @('Main', 'BackColor', 'Background'), @('Connect', 'BackColor', 'Button'), @('Details', 'BackColor', 'Field'),
-        @('DetailsFrame', 'BackColor', 'Field'), @('ContentSplit', 'BackColor', 'Divider'), @('Changes', 'BackColor', 'Field'),
+        @('DetailsFrame', 'BackColor', 'Field'), @('ContentSplit', 'BackColor', 'Divider'), @('SelectionSplit', 'BackColor', 'Divider'), @('Changes', 'BackColor', 'Field'),
         @('SettingsMenu', 'BackColor', 'Button'), @('Status', 'ForeColor', 'Text'), @('DetailsTab', 'BackColor', 'Field')
     )
     foreach ($entry in $expected) {
@@ -1460,6 +1510,11 @@ function Test-ThemeColors {
         }
     }
     if ($script:Controls.Changes.GridLines -eq $colors.Dark) { throw "Theme $Name kept unsuitable list grid lines" }
+    foreach ($split in @($script:Controls.ContentSplit, $script:Controls.SelectionSplit)) {
+        foreach ($panel in @($split.Panel1, $split.Panel2)) {
+            if ($panel.BackColor.ToArgb() -ne $colors.Background.ToArgb()) { throw "Theme $Name left divider color on $($split.Name) panels" }
+        }
+    }
 }
 
 function Test-MarkdownNotes {

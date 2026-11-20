@@ -11,9 +11,9 @@ using System.Web.Script.Serialization;
 [assembly: AssemblyTitle("P4 Auto Merge")]
 [assembly: AssemblyDescription("P4 auto merge with safe resolve and manual conflict handling")]
 [assembly: AssemblyProduct("P4 Auto Merge")]
-[assembly: AssemblyVersion("1.0.8.0")]
-[assembly: AssemblyFileVersion("1.0.8.0")]
-[assembly: AssemblyInformationalVersion("1.0.8")]
+[assembly: AssemblyVersion("1.0.9.0")]
+[assembly: AssemblyFileVersion("1.0.9.0")]
+[assembly: AssemblyInformationalVersion("1.0.9")]
 
 internal static class Program
 {

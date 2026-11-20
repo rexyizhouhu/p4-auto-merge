@@ -61,8 +61,8 @@ Source: "{#PackageDir}\SHA256SUMS.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\.p4ignore"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{#DesktopRoot}\P4 自动合并工具"; Filename: "{app}\P4AutoMerge.exe"; WorkingDir: "{app}"; Tasks: desktopicon
-Name: "{#MenuRoot}\P4 自动合并工具"; Filename: "{app}\P4AutoMerge.exe"; WorkingDir: "{app}"
+Name: "{#DesktopRoot}\P4 自动合并工具"; Filename: "{app}\P4AutoMerge.exe"; WorkingDir: "{app}"; AppUserModelID: "FlamesTools.P4AutoMerge"; Tasks: desktopicon
+Name: "{#MenuRoot}\P4 自动合并工具"; Filename: "{app}\P4AutoMerge.exe"; WorkingDir: "{app}"; AppUserModelID: "FlamesTools.P4AutoMerge"
 Name: "{#MenuRoot}\卸载 P4 自动合并工具"; Filename: "{uninstallexe}"
 
 [Run]
