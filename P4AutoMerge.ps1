@@ -60,6 +60,9 @@ $script:OutputPages = @(@('Details', '预览 / 待手工处理'), @('Log', '运�
 $script:OutputPage = ''
 $script:OutputTabHeight = 30
 $script:MenuBarHeight = 36
+$script:ButtonHeight = 26
+$script:ButtonPaddingX = 10
+$script:ButtonMarginY = 3
 $script:DescriptionColumnWidth = 650
 
 function New-Control {
@@ -103,6 +106,7 @@ function Set-ControlColors {
         $Control.UseVisualStyleBackColor = $false
         $Control.FlatStyle = 'Flat'
         $Control.Add_EnabledChanged({ Update-ControlColors $this })
+        Set-ButtonMetrics $Control
     }
     elseif ($Control -is [Windows.Forms.ComboBox]) { Set-ComboColors $Control }
     if (Test-NativeThemeControl $Control) { $Control.Add_HandleCreated({ Set-NativeTheme $this }) }
@@ -229,6 +233,27 @@ function Update-ButtonColors {
     Update-ButtonState $Button
 }
 
+# 系统自动尺寸自带不对称留白，且默认最小宽 75，短文字按钮两侧空得多、长文字按钮几乎贴边。
+# 因此统一为固定高度、文字宽度加固定左右间距；字体在加入窗口后才确定，需随字体和文字变化重新计算。
+function Set-ButtonMetrics {
+    param($Button)
+    $Button.AutoSize = $false
+    $Button.Dock = 'None'
+    $Button.Anchor = 'Left'
+    $Button.Margin = New-Object Windows.Forms.Padding(4, $script:ButtonMarginY, 4, $script:ButtonMarginY)
+    $Button.Padding = New-Object Windows.Forms.Padding(0)
+    $Button.Add_FontChanged({ Update-ButtonSize $this })
+    $Button.Add_TextChanged({ Update-ButtonSize $this })
+    Update-ButtonSize $Button
+}
+
+function Update-ButtonSize {
+    param($Button)
+    $flags = [Windows.Forms.TextFormatFlags]'NoPadding, SingleLine'
+    $text = [Windows.Forms.TextRenderer]::MeasureText($Button.Text, $Button.Font, [Drawing.Size]::Empty, $flags)
+    $Button.Size = New-Object Drawing.Size(($text.Width + 2 * $script:ButtonPaddingX), $script:ButtonHeight)
+}
+
 # 平面按钮禁用时文字固定为系统灰色，强调色底上看不清，因此禁用时换成低对比底色。
 function Update-ButtonState {
     param($Button)
@@ -326,6 +351,8 @@ function Update-ListFillColumn {
 
 function New-SearchToolbar {
     $bar = New-Control 'TableLayoutPanel' 'SearchToolbar'
+    # 上下不留外边距，行高才能完整容纳按钮，标签、输入框和按钮在同一中线上。
+    $bar.Margin = New-Object Windows.Forms.Padding(4, 0, 4, 0)
     $bar.ColumnCount = 5
     $bar.RowCount = 1
     [void]$bar.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
@@ -335,18 +362,19 @@ function New-SearchToolbar {
         [void]$bar.ColumnStyles.Add($style)
     }
     $label = New-Control 'Label' 'SearchLabel' '搜索 CL / 提交人：'
-    $label.AutoSize = $true
+    $label.TextAlign = 'MiddleLeft'
     $bar.Controls.Add($label, 0, 0)
     $search = New-Control 'TextBox' 'ChangeSearch'
+    $search.Anchor = 'Left, Right'; $search.Dock = 'None'
     $search.AccessibleName = '仅搜索 CL 编号和提交人；输入完整提交人账号时优先精确筛选'
     $bar.Controls.Add($search, 1, 0)
     $clear = New-Control 'Button' 'ClearSearch' '清除搜索'
-    $clear.Margin = New-Object Windows.Forms.Padding(4, 0, 4, 0)
     $bar.Controls.Add($clear, 2, 0)
     $caption = New-Control 'Label' 'ManualLabel' '手动 CL：'
     $caption.TextAlign = 'MiddleLeft'
     $bar.Controls.Add($caption, 3, 0)
     $manual = New-Control 'TextBox' 'ManualChanges'
+    $manual.Anchor = 'Left, Right'; $manual.Dock = 'None'
     $manual.AccessibleName = '补充 CL 编号，用逗号或空格分隔；与上方勾选的 CL 合并去重'
     $bar.Controls.Add($manual, 4, 0)
     return $bar
@@ -354,11 +382,10 @@ function New-SearchToolbar {
 
 function New-ListToolbar {
     $bar = New-Control 'FlowLayoutPanel' 'ListToolbar'
+    $bar.Margin = New-Object Windows.Forms.Padding(4, 0, 4, 0)
     $bar.WrapContents = $false
     foreach ($entry in @(@('Connect', '连接 / 刷新 workspace'), @('Fetch', '加载来源 CL'))) {
-        $button = New-Control 'Button' $entry[0] $entry[1]
-        $button.AutoSize = $true
-        $bar.Controls.Add($button)
+        $bar.Controls.Add((New-Control 'Button' $entry[0] $entry[1]))
     }
     $caption = New-Control 'Label' 'LimitLabel' '最近条数：'
     $caption.AutoSize = $true
@@ -391,10 +418,8 @@ function New-ActionPanel {
     $bar.AutoSize = $true
     foreach ($entry in @(@('Preview', '1. 预览'), @('Start', '2. 执行合并'),
         @('Load', '恢复该 workspace 队列'), @('Resume', '检查并继续'),
-        @('P4V', '在 P4V 打开 workspace'), @('Finish', '结束队列（保留 CL）'))) {
-        $button = New-Control 'Button' $entry[0] $entry[1]
-        $button.AutoSize = $true
-        $bar.Controls.Add($button)
+        @('P4V', '在 P4V 打开 workspace'), @('Finish', '结束队列 (保留 CL)'))) {
+        $bar.Controls.Add((New-Control 'Button' $entry[0] $entry[1]))
     }
     $script:Controls.Start.Enabled = $false
     $script:Controls.Resume.Enabled = $false
@@ -426,8 +451,6 @@ function New-OutputPanel {
 function New-OutputTab {
     param([string]$Page, [string]$Caption)
     $tab = New-Control 'Button' ($Page + 'Tab') $Caption
-    $tab.AutoSize = $true
-    $tab.Dock = 'None'
     $tab.Margin = New-Object Windows.Forms.Padding(0, 0, 4, 0)
     $tab.Tag = $Page
     $tab.Add_Click({ Show-OutputPage ([string]$this.Tag) })
@@ -528,13 +551,10 @@ function New-MenuBar {
     $bar.Height = $script:MenuBarHeight
     $bar.WrapContents = $false
     $bar.Margin = New-Object Windows.Forms.Padding(0)
-    $bar.Padding = New-Object Windows.Forms.Padding(4, 4, 0, 0)
+    $bar.Padding = New-Object Windows.Forms.Padding(4, (($script:MenuBarHeight - $script:ButtonHeight) / 2), 0, 0)
     # 与其他操作按钮同样使用强调色底，避免和标签文字混淆、不易发现。
     $item = New-Control 'Button' 'SettingsMenu' '设置'
-    $item.Dock = 'None'
-    $item.AutoSize = $true
     $item.Margin = New-Object Windows.Forms.Padding(4, 0, 0, 0)
-    $item.Padding = New-Object Windows.Forms.Padding(8, 0, 8, 0)
     $bar.Controls.Add($item)
     return $bar
 }
@@ -1218,6 +1238,28 @@ function Test-ListToolbarAlignment {
     if ($settings.Bottom -gt $script:Controls.MenuBar.ClientSize.Height -or $settings.Height -lt $button.Height) {
         throw 'Settings button is clipped or smaller than the action buttons'
     }
+    Test-ButtonMetrics $script:Controls.Main
+}
+
+# 所有按钮同高、左右留白一致，且完整位于父容器内，不被行高裁切。
+function Test-ButtonMetrics {
+    param($Root)
+    $flags = [Windows.Forms.TextFormatFlags]'NoPadding, SingleLine'
+    foreach ($control in @(Get-ControlTree $Root | Where-Object { $_ -is [Windows.Forms.Button] })) {
+        $text = [Windows.Forms.TextRenderer]::MeasureText($control.Text, $control.Font, [Drawing.Size]::Empty, $flags)
+        if ($control.Height -ne $script:ButtonHeight -or $control.Width -ne $text.Width + 2 * $script:ButtonPaddingX) {
+            throw "Button padding is not uniform: $($control.Name) $($control.Size)"
+        }
+        $parent = $control.Parent.ClientSize
+        if ($control.Top -lt 0 -or $control.Bottom -gt $parent.Height -or $control.Right -gt $parent.Width) {
+            throw "Button is clipped by its container: $($control.Name)"
+        }
+    }
+}
+
+function Get-ControlTree {
+    param($Control)
+    foreach ($child in $Control.Controls) { $child; Get-ControlTree $child }
 }
 
 function Test-CompactSearchRow {
@@ -1385,6 +1427,8 @@ function Test-ThemeControls {
             if (($buttons -join ',') -ne '保存,取消' -or $themeCombo.Items.Count -ne $script:UiThemes.Count) {
                 throw 'Settings dialog buttons or theme choices are wrong'
             }
+            $dialog.Form.CreateControl(); $dialog.Form.PerformLayout()
+            Test-ButtonMetrics $dialog.Form
             $themeCombo.SelectedIndex = [array]::IndexOf(@($script:UiThemes.Keys), 'DarkModern')
             if ($script:UiThemeName -ne 'DarkModern' -or $dialog.Form.BackColor.ToArgb() -ne $script:UiColors.Background.ToArgb()) {
                 throw 'Theme choice did not preview in the settings dialog'

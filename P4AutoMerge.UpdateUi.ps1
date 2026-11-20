@@ -77,12 +77,12 @@ function Add-RichText {
 
 function New-UpdateBar {
     $bar = New-Control 'FlowLayoutPanel' 'UpdateBar'
+    $bar.Margin = New-Object Windows.Forms.Padding(4, 0, 4, 0)
     $bar.WrapContents = $false
-    $button = New-Control 'Button' 'CheckUpdate' '检查更新'
-    $button.AutoSize = $true
-    $bar.Controls.Add($button)
+    $bar.Controls.Add((New-Control 'Button' 'CheckUpdate' '检查更新'))
     $label = New-Control 'Label' 'UpdateStatus' ("当前版本 $(Get-UpdateVersion)")
     $label.AutoSize = $true
+    $label.Dock = 'None'; $label.Anchor = 'Left'
     $bar.Controls.Add($label)
     return $bar
 }
@@ -125,7 +125,6 @@ function New-UpdateChoiceButtons {
         $button = New-Object Windows.Forms.Button
         Set-ControlColors $button
         $button.Text = $entry[0]
-        $button.AutoSize = $true
         $button.DialogResult = $entry[1]
         $bar.Controls.Add($button)
         if ($entry[1] -eq 'Cancel') { $Dialog.CancelButton = $button }
