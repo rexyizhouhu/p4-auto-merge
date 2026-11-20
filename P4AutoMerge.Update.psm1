@@ -1,6 +1,6 @@
 ﻿Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$script:ProductVersion = '1.0.10'
+$script:ProductVersion = '1.0.11'
 $script:Repository = 'https://github.com/rexyizhouhu/p4-auto-merge'
 $script:LatestApi = 'https://api.github.com/repos/rexyizhouhu/p4-auto-merge/releases/latest'
 $script:LatestManifest = $script:Repository + '/releases/latest/download/update.json'

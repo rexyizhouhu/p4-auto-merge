@@ -58,24 +58,25 @@ $script:UpdatingResolveModes = $false
 $script:UiThemes = [ordered]@{
     LightModern = @{ Label = 'VS Code 浅色 (Light Modern，默认)'; Dark = $false; Colors = @{
         Background = '#F8F8F8'; Field = '#FFFFFF'; Button = '#005FB8'; ButtonHover = '#0258A8'; ButtonPressed = '#024C91'
-        ButtonDisabled = '#E1E1E1'; Border = '#CECECE'; Divider = '#E0E0E0'; Text = '#3B3B3B'; DisabledText = '#9A9A9A'; Hover = '#E8E8E8' } }
+        ButtonDisabled = '#E1E1E1'; Border = '#CECECE'; Divider = '#E0E0E0'; Text = '#3B3B3B'; DisabledText = '#9A9A9A'; Hover = '#E8E8E8'; InputBorder = '#7A7A7A' } }
     Blue = @{ Label = '柔和蓝'; Dark = $false; Colors = @{
         Background = '#E3EFFB'; Field = '#FFFFFF'; Button = '#5A7DA3'; ButtonHover = '#4D6D90'; ButtonPressed = '#42607F'
-        ButtonDisabled = '#D3DAE2'; Border = '#BFC9D4'; Divider = '#C9D5E2'; Text = '#2E3440'; DisabledText = '#8A94A0'; Hover = '#D6E4F2' } }
+        ButtonDisabled = '#D3DAE2'; Border = '#BFC9D4'; Divider = '#C9D5E2'; Text = '#2E3440'; DisabledText = '#8A94A0'; Hover = '#D6E4F2'; InputBorder = '#7F8B99' } }
     QuietLight = @{ Label = 'VS Code 安静浅色 (Quiet Light)'; Dark = $false; Colors = @{
         Background = '#F3F3F3'; Field = '#FFFFFF'; Button = '#705697'; ButtonHover = '#634C86'; ButtonPressed = '#554174'
-        ButtonDisabled = '#E0DCE6'; Border = '#C9C9C9'; Divider = '#DDDDDD'; Text = '#333333'; DisabledText = '#9A9A9A'; Hover = '#E4E0EB' } }
+        ButtonDisabled = '#E0DCE6'; Border = '#C9C9C9'; Divider = '#DDDDDD'; Text = '#333333'; DisabledText = '#9A9A9A'; Hover = '#E4E0EB'; InputBorder = '#8C8C8C' } }
     SolarizedLight = @{ Label = 'VS Code Solarized 浅色'; Dark = $false; Colors = @{
         Background = '#EEE8D5'; Field = '#FDF6E3'; Button = '#586E75'; ButtonHover = '#4B5F66'; ButtonPressed = '#3F5056'
-        ButtonDisabled = '#DDD6C1'; Border = '#CFC6AE'; Divider = '#DDD6C1'; Text = '#475B62'; DisabledText = '#93A1A1'; Hover = '#E3DCC7' } }
+        ButtonDisabled = '#DDD6C1'; Border = '#CFC6AE'; Divider = '#DDD6C1'; Text = '#475B62'; DisabledText = '#93A1A1'; Hover = '#E3DCC7'; InputBorder = '#93A1A1' } }
     DarkModern = @{ Label = 'VS Code 深色 (Dark Modern)'; Dark = $true; Colors = @{
         Background = '#1F1F1F'; Field = '#2B2B2B'; Button = '#0078D4'; ButtonHover = '#026EC1'; ButtonPressed = '#005FA8'
-        ButtonDisabled = '#3A3D41'; Border = '#454545'; Divider = '#333333'; Text = '#CCCCCC'; DisabledText = '#6E7681'; Hover = '#37373D' } }
+        ButtonDisabled = '#3A3D41'; Border = '#454545'; Divider = '#333333'; Text = '#CCCCCC'; DisabledText = '#6E7681'; Hover = '#37373D'; InputBorder = '#6E6E6E' } }
 }
 $script:DefaultUiTheme = 'LightModern'
 $script:UiThemeName = ''
 $script:UiColors = @{}
 $script:NativeThemeLoaded = $false
+$script:ComboBorderHosts = New-Object 'System.Collections.Generic.HashSet[object]'
 $script:SelectedPanelHeight = 130
 $script:SelectedMinHeight = 60
 $script:ListMinHeight = 130
@@ -206,19 +207,56 @@ function Set-WindowDarkMode {
 }
 
 # 带视觉样式的下拉列表忽略 BackColor，自绘选中项和下拉项才能显示主题底色。
+# 平面下拉框的外边框与底色同色、看不见，因此由父容器在其外圈 1 像素（位于外边距内）画边框，不改变布局。
 function Set-ComboColors {
     param($Combo)
     $Combo.FlatStyle = 'Flat'
     $Combo.DrawMode = 'OwnerDrawFixed'
     $Combo.Add_DrawItem({ Write-ComboItem $this $_ })
+    $Combo.Add_ParentChanged({ Register-ComboBorderHost $this.Parent })
+    $Combo.Add_GotFocus({ Update-ComboBorder $this })
+    $Combo.Add_LostFocus({ Update-ComboBorder $this })
+    $Combo.Add_EnabledChanged({ Update-ComboBorder $this })
+    $Combo.Add_SizeChanged({ Update-ComboBorder $this })
+    $Combo.Add_LocationChanged({ Update-ComboBorder $this })
+}
+
+function Register-ComboBorderHost {
+    param($HostControl)
+    if (-not $HostControl -or -not $script:ComboBorderHosts.Add($HostControl)) { return }
+    $HostControl.Add_Paint({ Write-ComboBorders $this $_ })
+}
+
+function Write-ComboBorders {
+    param($HostControl, $Event)
+    foreach ($combo in @($HostControl.Controls | Where-Object { $_ -is [Windows.Forms.ComboBox] })) {
+        $pen = New-Object Drawing.Pen((Get-ComboBorderColor $combo))
+        try { $Event.Graphics.DrawRectangle($pen, ($combo.Left - 1), ($combo.Top - 1), ($combo.Width + 1), ($combo.Height + 1)) }
+        finally { $pen.Dispose() }
+    }
+}
+
+# 与普通输入框边框深浅一致；获得焦点时用强调色表示正在操作，禁用时用浅色边框。
+function Get-ComboBorderColor {
+    param($Combo)
+    if (-not $Combo.Enabled) { return $script:UiColors.Border }
+    if ($Combo.Focused) { return $script:UiColors.Button }
+    return $script:UiColors.InputBorder
+}
+
+function Update-ComboBorder {
+    param($Combo)
+    if ($Combo.Parent) { $Combo.Parent.Invalidate() }
 }
 
 function Write-ComboItem {
     param($Combo, $Event)
     $selected = ($Event.State -band [Windows.Forms.DrawItemState]::Selected) -ne 0
+    # 编辑区（显示当前值的部分）获得焦点时系统也标为选中，若用悬停色会像被禁用；焦点改由边框强调色表示。
+    $editArea = ($Event.State -band [Windows.Forms.DrawItemState]::ComboBoxEdit) -ne 0
     $back = $script:UiColors.Field
     if (-not $Combo.Enabled) { $back = $script:UiColors.Background }
-    elseif ($selected) { $back = $script:UiColors.Hover }
+    elseif ($selected -and -not $editArea) { $back = $script:UiColors.Hover }
     $brush = New-Object Drawing.SolidBrush($back)
     try { $Event.Graphics.FillRectangle($brush, $Event.Bounds) }
     finally { $brush.Dispose() }
@@ -1612,11 +1650,51 @@ function Test-ThemeColors {
         }
     }
     if ($script:Controls.Changes.GridLines -eq $colors.Dark) { throw "Theme $Name kept unsuitable list grid lines" }
+    Test-ComboBorders $Name
     foreach ($split in @($script:Controls.ContentSplit, $script:Controls.SelectionSplit)) {
         foreach ($panel in @($split.Panel1, $split.Panel2)) {
             if ($panel.BackColor.ToArgb() -ne $colors.Background.ToArgb()) { throw "Theme $Name left divider color on $($split.Name) panels" }
         }
     }
+}
+
+# 确认每个下拉框外圈都画出可见边框，且当前值区域不画成悬停灰底。
+# DrawToBitmap 不触发父容器的 Paint 事件，因此直接用父容器的绘制函数画到图片上检查。
+function Test-ComboBorders {
+    param([string]$Name)
+    $grid = $script:Controls.Settings
+    $bitmap = New-Object Drawing.Bitmap($grid.Width, $grid.Height)
+    $graphics = [Drawing.Graphics]::FromImage($bitmap)
+    try {
+        Write-ComboBorders $grid (New-Object Windows.Forms.PaintEventArgs($graphics, $grid.ClientRectangle))
+        foreach ($combo in @('Client', 'Source', 'Target', 'ResolveMode' | ForEach-Object { $script:Controls[$_] })) {
+            if (-not $script:ComboBorderHosts.Contains($combo.Parent)) { throw "Combo border painter not attached for $($combo.Name)" }
+            $middle = $combo.Top + [int]($combo.Height / 2)
+            $expected = (Get-ComboBorderColor $combo).ToArgb()
+            foreach ($point in @(@(($combo.Left - 1), $middle), @(($combo.Right), $middle))) {
+                if ($bitmap.GetPixel($point[0], $point[1]).ToArgb() -ne $expected) { throw "Theme $Name has no visible border on combo $($combo.Name)" }
+            }
+        }
+    }
+    finally { $graphics.Dispose(); $bitmap.Dispose() }
+    $target = $script:Controls.Target
+    if (-not $target.Enabled -and (Get-ComboBorderColor $target).ToArgb() -ne $script:UiColors.Border.ToArgb()) {
+        throw "Theme $Name disabled combo border is not muted"
+    }
+    Test-ComboEditBackground $Name
+}
+
+function Test-ComboEditBackground {
+    param([string]$Name)
+    $bitmap = New-Object Drawing.Bitmap(40, 20)
+    $graphics = [Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $state = [Windows.Forms.DrawItemState]'Selected, Focus, ComboBoxEdit'
+        $event = New-Object Windows.Forms.DrawItemEventArgs($graphics, $script:Controls.Main.Font, (New-Object Drawing.Rectangle(0, 0, 40, 20)), -1, $state)
+        Write-ComboItem $script:Controls.ResolveMode $event
+        if ($bitmap.GetPixel(20, 10).ToArgb() -ne $script:UiColors.Field.ToArgb()) { throw "Theme $Name draws the focused combo value with a disabled-looking background" }
+    }
+    finally { $graphics.Dispose(); $bitmap.Dispose() }
 }
 
 function Test-MarkdownNotes {
