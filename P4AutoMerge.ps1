@@ -59,7 +59,7 @@ $script:ActionRowHeight = 45
 $script:OutputPages = @(@('Details', '预览 / 待手工处理'), @('Log', '运行日志'))
 $script:OutputPage = ''
 $script:OutputTabHeight = 30
-$script:MenuBarHeight = 28
+$script:MenuBarHeight = 36
 $script:DescriptionColumnWidth = 650
 
 function New-Control {
@@ -220,7 +220,6 @@ function Test-FieldControl {
 
 function Update-ButtonColors {
     param($Button)
-    if ($Button.Tag -eq 'MenuItem') { Set-MenuItemColors $Button; return }
     if (@($script:OutputPages | Where-Object { $_[0] -eq [string]$Button.Tag }).Count) {
         Set-OutputTabColors $Button ($Button.Tag -eq $script:OutputPage); return
     }
@@ -228,15 +227,6 @@ function Update-ButtonColors {
     $Button.FlatAppearance.MouseOverBackColor = $script:UiColors.ButtonHover
     $Button.FlatAppearance.MouseDownBackColor = $script:UiColors.ButtonPressed
     Update-ButtonState $Button
-}
-
-function Set-MenuItemColors {
-    param($Item)
-    $Item.BackColor = $script:UiColors.Background
-    $Item.ForeColor = $script:UiColors.Text
-    $Item.FlatAppearance.BorderSize = 0
-    $Item.FlatAppearance.MouseOverBackColor = $script:UiColors.Hover
-    $Item.FlatAppearance.MouseDownBackColor = $script:UiColors.Hover
 }
 
 # 平面按钮禁用时文字固定为系统灰色，强调色底上看不清，因此禁用时换成低对比底色。
@@ -391,6 +381,8 @@ function New-ListToolbar {
     $count = New-Control 'Label' 'SearchCount' '尚未加载来源 CL'
     $count.AutoSize = $true
     $bar.Controls.Add($count)
+    # 流式布局中停靠为 Fill 的控件贴行顶；取消停靠、仅左锚定时才与较高的按钮垂直居中对齐。
+    foreach ($control in @($caption, $limit, $count)) { $control.Dock = 'None'; $control.Anchor = 'Left' }
     return $bar
 }
 
@@ -536,14 +528,13 @@ function New-MenuBar {
     $bar.Height = $script:MenuBarHeight
     $bar.WrapContents = $false
     $bar.Margin = New-Object Windows.Forms.Padding(0)
-    $bar.Padding = New-Object Windows.Forms.Padding(2, 1, 0, 0)
+    $bar.Padding = New-Object Windows.Forms.Padding(4, 4, 0, 0)
+    # 与其他操作按钮同样使用强调色底，避免和标签文字混淆、不易发现。
     $item = New-Control 'Button' 'SettingsMenu' '设置'
-    $item.Tag = 'MenuItem'
     $item.Dock = 'None'
     $item.AutoSize = $true
-    $item.Margin = New-Object Windows.Forms.Padding(0)
-    $item.Padding = New-Object Windows.Forms.Padding(6, 0, 6, 0)
-    Update-ControlColors $item
+    $item.Margin = New-Object Windows.Forms.Padding(4, 0, 0, 0)
+    $item.Padding = New-Object Windows.Forms.Padding(8, 0, 8, 0)
     $bar.Controls.Add($item)
     return $bar
 }
@@ -1202,6 +1193,7 @@ function Test-ResizableContent {
             $form.Size = $size
             $form.PerformLayout()
             Test-CompactSearchRow
+            Test-ListToolbarAlignment
             Test-SplitterRange $split
         }
     }
@@ -1211,6 +1203,21 @@ function Test-ResizableContent {
         $split.SplitterDistance = $original
     }
     Write-Output 'Resizable preview passed: default 1000 CLs, movable divider and a complete CL row at minimum window/split size.'
+}
+
+function Test-ListToolbarAlignment {
+    $button = $script:Controls.Connect
+    $center = $button.Top + $button.Height / 2
+    foreach ($name in @('LimitLabel', 'Limit', 'SearchCount')) {
+        $control = $script:Controls[$name]
+        if ([Math]::Abs(($control.Top + $control.Height / 2) - $center) -gt 1) {
+            throw "List toolbar item is not vertically centered with the buttons: $name"
+        }
+    }
+    $settings = $script:Controls.SettingsMenu
+    if ($settings.Bottom -gt $script:Controls.MenuBar.ClientSize.Height -or $settings.Height -lt $button.Height) {
+        throw 'Settings button is clipped or smaller than the action buttons'
+    }
 }
 
 function Test-CompactSearchRow {
@@ -1396,7 +1403,7 @@ function Test-ThemeColors {
     $expected = @(
         @('Main', 'BackColor', 'Background'), @('Connect', 'BackColor', 'Button'), @('Details', 'BackColor', 'Field'),
         @('DetailsFrame', 'BackColor', 'Field'), @('ContentSplit', 'BackColor', 'Divider'), @('Changes', 'BackColor', 'Field'),
-        @('SettingsMenu', 'BackColor', 'Background'), @('Status', 'ForeColor', 'Text'), @('DetailsTab', 'BackColor', 'Field')
+        @('SettingsMenu', 'BackColor', 'Button'), @('Status', 'ForeColor', 'Text'), @('DetailsTab', 'BackColor', 'Field')
     )
     foreach ($entry in $expected) {
         if ($script:Controls[$entry[0]].($entry[1]).ToArgb() -ne $colors[$entry[2]].ToArgb()) {
