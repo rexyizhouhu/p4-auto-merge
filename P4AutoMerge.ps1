@@ -37,6 +37,12 @@ $script:SelectedChanges = New-Object 'System.Collections.Generic.HashSet[int]'
 $script:UpdatingChanges = $false
 $script:LastOperationError = ''
 $script:ChangeCache = @()
+# 来源 CL 相对当前目标分支的合并状态：空表示未查询，其余见 MergeStatusLabels。
+$script:MergeStatusState = ''
+$script:UnmergedChanges = New-Object 'System.Collections.Generic.HashSet[int]'
+$script:MergeStatusQueued = $false
+$script:HiddenMergedCount = 0
+$script:MergeStatusLabels = @{ '' = ''; Pending = '…'; Failed = '未知'; Merged = '已合并'; Unmerged = '未合并' }
 $script:SearchAuthor = ''
 $script:DescriptionDisplayLimit = 200
 $script:PreviewMessageLimit = 50
@@ -149,6 +155,7 @@ function Update-ControlColors {
     elseif ((Test-FieldControl $Control) -or $Control.Tag -eq 'TextFrame') { $Control.BackColor = $script:UiColors.Field }
     # 系统网格线固定为浅灰，深色主题下会形成刺眼的白线。
     if ($Control -is [Windows.Forms.ListView]) { $Control.GridLines = -not $script:UiColors.Dark }
+    if ($Control.Name -eq 'Changes') { foreach ($entry in $script:ChangeCache) { Update-ChangeItemStatus $entry.Item } }
     if ($Control.IsHandleCreated -and (Test-NativeThemeControl $Control)) { Set-NativeTheme $Control }
 }
 
@@ -357,7 +364,7 @@ function New-SelectionPanel {
     $list.Add_DrawSubItem({ $_.DrawDefault = $true })
     # 表头右侧空白由系统绘制、无法跟随主题，因此让最后一列“说明”始终填满剩余宽度。
     $list.Add_ClientSizeChanged({ Update-ListFillColumn $this })
-    foreach ($column in @(@('源 CL', 85), @('提交人', 110), @('日期', 145), @('说明', $script:DescriptionColumnWidth))) {
+    foreach ($column in @(@('源 CL', 85), @('状态', 70), @('提交人', 110), @('日期', 145), @('说明', $script:DescriptionColumnWidth))) {
         [void]$list.Columns.Add($column[0], $column[1])
     }
     $grid.Controls.Add($list, 0, 2)
@@ -377,10 +384,10 @@ function New-SearchToolbar {
     $bar = New-Control 'TableLayoutPanel' 'SearchToolbar'
     # 上下不留外边距，行高才能完整容纳按钮，标签、输入框和按钮在同一中线上。
     $bar.Margin = New-Object Windows.Forms.Padding(4, 0, 4, 0)
-    $bar.ColumnCount = 5
+    $bar.ColumnCount = 6
     $bar.RowCount = 1
     [void]$bar.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
-    foreach ($width in @(165, 0, 90, 75, 225)) {
+    foreach ($width in @(165, 0, 90, 110, 75, 225)) {
         $style = New-Object Windows.Forms.ColumnStyle('Absolute', $width)
         if ($width -eq 0) { $style.SizeType = 'Percent'; $style.Width = 100 }
         [void]$bar.ColumnStyles.Add($style)
@@ -394,13 +401,19 @@ function New-SearchToolbar {
     $bar.Controls.Add($search, 1, 0)
     $clear = New-Control 'Button' 'ClearSearch' '清除搜索'
     $bar.Controls.Add($clear, 2, 0)
+    $hide = New-Control 'CheckBox' 'HideMerged' '隐藏已合并'
+    $hide.Checked = $true
+    $hide.AutoSize = $true
+    $hide.Dock = 'None'; $hide.Anchor = 'Left'
+    $hide.AccessibleName = '隐藏已按合并历史合并到目标分支的 CL；已勾选的 CL 仍保留在选择中'
+    $bar.Controls.Add($hide, 3, 0)
     $caption = New-Control 'Label' 'ManualLabel' '手动 CL：'
     $caption.TextAlign = 'MiddleLeft'
-    $bar.Controls.Add($caption, 3, 0)
+    $bar.Controls.Add($caption, 4, 0)
     $manual = New-Control 'TextBox' 'ManualChanges'
     $manual.Anchor = 'Left, Right'; $manual.Dock = 'None'
     $manual.AccessibleName = '补充 CL 编号，用逗号或空格分隔；与上方勾选的 CL 合并去重'
-    $bar.Controls.Add($manual, 4, 0)
+    $bar.Controls.Add($manual, 5, 0)
     return $bar
 }
 
@@ -701,7 +714,7 @@ function Update-SelectedPreview {
     $position = 0
     foreach ($number in @($snapshot.Numbers | Select-Object -First $script:SelectedPreviewLimit)) {
         $position++
-        Add-SelectedChangeDetails $lines ([int]$number) $position
+        Add-SelectedChangeDetails $lines ([int]$number) $position $request
     }
     if ($snapshot.Numbers.Count -gt $position) { $lines.Add("界面仅显示前 $position 个 CL；实际已选编号和执行请求不截断。") }
     if ($position -eq 0) { $lines.Add('尚未选择 CL，可在来源列表中勾选或手动输入编号。') }
@@ -710,7 +723,7 @@ function Update-SelectedPreview {
 }
 
 function Add-SelectedChangeDetails {
-    param($Lines, [int]$Number, [int]$Position)
+    param($Lines, [int]$Number, [int]$Position, $Request)
     $Lines.Add('')
     if (-not $script:ChangeDetails.ContainsKey($Number)) {
         $Lines.Add("$Position. CL $Number（未加载提交人和说明）")
@@ -724,6 +737,9 @@ function Add-SelectedChangeDetails {
     }
     $Lines.Add("$Position. CL $Number | 提交人：$($change.user)")
     $Lines.Add("   $description")
+    if ((Get-ChangeMergeState $Number) -eq 'Merged' -and -not (Get-ReintegrateMode $Request)) {
+        $Lines.Add('   注意：已合并到目标（按合并历史），预览可能为 0 个文件；需要重新合并请勾选“强制重新合并”。')
+    }
 }
 
 function Set-BusyState {
@@ -739,6 +755,10 @@ function Start-UiOperation {
     if ($script:Worker) { return }
     $script:LastOperationError = ''
     $request = Get-UiRequest
+    if ($Action -eq 'MergeStatus') {
+        $oldest = @($script:ChangeCache | ForEach-Object { $_.Number } | Measure-Object -Minimum).Minimum
+        $request | Add-Member NoteProperty OldestChange ([int]$oldest)
+    }
     Assert-UiRequest $Action $request
     if ($Action -eq 'Start' -and -not (Confirm-Start $request)) { return }
     if ($Action -eq 'Finish' -and -not (Confirm-Finish)) { return }
@@ -759,6 +779,10 @@ function Start-UiOperation {
 
 function Assert-UiRequest {
     param([string]$Action, $Request)
+    if ($Action -eq 'MergeStatus') {
+        if (-not $Request.Source -or -not $Request.Target) { throw '请先选择来源分支和目标分支。' }
+        return
+    }
     if ($Action -notin @('Changes', 'Preview', 'Start')) { return }
     if (-not $Request.Source) { throw '请先选择来源分支。' }
     if ($Action -eq 'Changes') { return }
@@ -829,6 +853,8 @@ function Update-TargetStreams {
     if ($PreferredTarget -and $target.Items.Contains($PreferredTarget)) { $target.SelectedItem = $PreferredTarget }
     elseif ($oldTarget -and $target.Items.Contains($oldTarget)) { $target.SelectedItem = $oldTarget }
     else { Select-WorkspaceTarget }
+    # 优先 workspace 所属分支；不在候选中时默认选第一个可用目标，省去手动选择。
+    if ($target.SelectedIndex -lt 0 -and $target.Items.Count -gt 0) { $target.SelectedIndex = 0 }
     Set-SessionButtons
 }
 
@@ -870,6 +896,7 @@ function Show-ChangeList {
     foreach ($change in $script:SourceChanges) {
         $script:ChangeDetails[[int]$change.change] = $change
         $cache.Add([pscustomobject]@{
+            Number = [int]$change.change
             SearchText = "$($change.change) $($change.user)"
             User = [string]$change.user
             Item = New-ChangeListItem $change
@@ -877,7 +904,7 @@ function Show-ChangeList {
     }
     $script:ChangeCache = $cache.ToArray()
     Reset-Preview
-    Update-FilteredChanges
+    Request-MergeStatus
     $script:Controls.Status.Text = "已加载 $($script:SourceChanges.Count) 个来源 CL。完整账号优先匹配提交人；搜索仅覆盖已加载条目，其他 CL 可在右侧输入编号。"
 }
 
@@ -898,10 +925,13 @@ function Update-FilteredChanges {
     $list.BeginUpdate()
     try {
         $list.Items.Clear()
+        $script:HiddenMergedCount = 0
+        $hideMerged = $script:Controls.HideMerged.Checked
         $items = New-Object 'System.Collections.Generic.List[System.Windows.Forms.ListViewItem]'
         foreach ($entry in $script:ChangeCache) {
             if ($script:SearchAuthor -and -not [string]::Equals($entry.User, $script:SearchAuthor, [StringComparison]::OrdinalIgnoreCase)) { continue }
             if (-not $script:SearchAuthor -and $query -and $entry.SearchText.IndexOf($query, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+            if ($hideMerged -and (Get-ChangeMergeState $entry.Number) -eq 'Merged') { $script:HiddenMergedCount++; continue }
             $entry.Item.Checked = $script:SelectedChanges.Contains([int]$entry.Item.Text)
             $items.Add($entry.Item)
         }
@@ -917,6 +947,7 @@ function Update-FilteredChanges {
 function New-ChangeListItem {
     param($Change)
     $item = New-Object Windows.Forms.ListViewItem([string]$Change.change)
+    [void]$item.SubItems.Add('')
     [void]$item.SubItems.Add($Change.user)
     $time = [DateTimeOffset]::FromUnixTimeSeconds([long]$Change.time).LocalDateTime
     [void]$item.SubItems.Add($time.ToString('yyyy-MM-dd HH:mm'))
@@ -927,11 +958,79 @@ function New-ChangeListItem {
     [void]$item.SubItems.Add($description)
     $item.ToolTipText = $Change.desc
     $item.Checked = $script:SelectedChanges.Contains([int]$Change.change)
+    Update-ChangeItemStatus $item
     return $item
+}
+
+function Get-ChangeMergeState {
+    param([int]$Number)
+    if ($script:MergeStatusState -ne 'Ready') { return $script:MergeStatusState }
+    if ($script:UnmergedChanges.Contains($Number)) { return 'Unmerged' }
+    return 'Merged'
+}
+
+# 已合并的行用主题的禁用文字色显示；切换主题时由 Update-ControlColors 重新调用。
+function Update-ChangeItemStatus {
+    param($Item)
+    $state = Get-ChangeMergeState ([int]$Item.Text)
+    $Item.SubItems[1].Text = $script:MergeStatusLabels[$state]
+    $color = $script:UiColors.Text
+    if ($state -eq 'Merged') { $color = $script:UiColors.DisabledText }
+    $Item.ForeColor = $color
+}
+
+function Update-ChangeStatusDisplay {
+    foreach ($entry in $script:ChangeCache) { Update-ChangeItemStatus $entry.Item }
+    Update-FilteredChanges
+    Invalidate-SelectedPreview
+}
+
+# 只标记待查询，由界面定时器在没有其他 P4 操作时发起，避免在其他操作的回调中嵌套启动。
+function Request-MergeStatus {
+    $script:UnmergedChanges.Clear()
+    $script:MergeStatusState = ''
+    $script:MergeStatusQueued = $false
+    if ($script:ChangeCache.Count -gt 0 -and $script:Controls.Target.Text -and $script:Controls.Source.Text) {
+        $script:MergeStatusState = 'Pending'
+        $script:MergeStatusQueued = $true
+    }
+    Update-ChangeStatusDisplay
+}
+
+function Start-QueuedMergeStatus {
+    if (-not $script:MergeStatusQueued -or $script:Worker) { return }
+    $script:MergeStatusQueued = $false
+    try { Start-UiOperation 'MergeStatus' }
+    catch { Set-MergeStatusFailed $_.Exception.Message }
+}
+
+function Show-MergeStatus {
+    param($Status)
+    if ($Status.Source -cne $script:Controls.Source.Text -or $Status.Target -cne $script:Controls.Target.Text) {
+        Request-MergeStatus
+        return
+    }
+    $script:UnmergedChanges.Clear()
+    foreach ($number in @($Status.Unmerged)) { [void]$script:UnmergedChanges.Add([int]$number) }
+    $script:MergeStatusState = 'Ready'
+    Update-ChangeStatusDisplay
+    $merged = @($script:ChangeCache | Where-Object { -not $script:UnmergedChanges.Contains($_.Number) }).Count
+    $script:Controls.Status.Text = "已加载 $($script:ChangeCache.Count) 个来源 CL，其中 $merged 个按合并历史已合并到 $($Status.Target)。部分文件未合并的 CL 显示为未合并。"
+}
+
+# 合并状态只是辅助信息，查询失败不影响选择和合并，只记录到运行日志。
+function Set-MergeStatusFailed {
+    param([string]$Message)
+    $script:MergeStatusState = 'Failed'
+    $script:MergeStatusQueued = $false
+    Update-ChangeStatusDisplay
+    $script:Controls.Log.AppendText("`r`n[合并状态] 查询失败，状态列显示为未知：$Message`r`n")
+    $script:Controls.Status.Text = '合并状态查询失败，状态列显示为未知；不影响选择和合并，详情见运行日志。'
 }
 
 function Update-SearchCount {
     $script:Controls.SearchCount.Text = "显示 $($script:Controls.Changes.Items.Count) / 已加载 $($script:SourceChanges.Count)，已勾选 $($script:SelectedChanges.Count)"
+    if ($script:HiddenMergedCount -gt 0) { $script:Controls.SearchCount.Text += "，已隐藏已合并 $script:HiddenMergedCount" }
     if ($script:SearchAuthor) { $script:Controls.SearchCount.Text += "，提交人：$script:SearchAuthor" }
 }
 
@@ -951,7 +1050,7 @@ function Clear-SourceChanges {
     $script:ChangeDetails = @{}
     $script:SelectedChanges.Clear()
     $script:Controls.ChangeSearch.Clear()
-    Update-FilteredChanges
+    Request-MergeStatus
     Reset-Preview
 }
 
@@ -1081,6 +1180,7 @@ function Complete-UiOperation {
         switch ($worker.Action) {
             'Catalog' { Show-Catalog $result[0] }
             'Changes' { Show-ChangeList $result }
+            'MergeStatus' { Show-MergeStatus $result[0] }
             'Preview' { Show-Preview $result[0] }
             default { Show-Session $result[0] }
         }
@@ -1089,6 +1189,7 @@ function Complete-UiOperation {
         $failure = $_.Exception
         while ($failure.InnerException) { $failure = $failure.InnerException }
         $message = $failure.Message
+        if ($worker.Action -eq 'MergeStatus') { Set-MergeStatusFailed $message; return }
         $script:LastOperationError = $message
         try {
             $saved = Invoke-MergeAction 'Load' (Get-UiRequest) $null
@@ -1156,10 +1257,11 @@ function Register-UiEvents {
         if ($script:UpdatingResolveModes) { return }
         Reset-Preview
     })
-    $script:Controls.Target.Add_SelectedIndexChanged({ Update-ResolveLabels; Reset-Preview })
+    $script:Controls.Target.Add_SelectedIndexChanged({ Update-ResolveLabels; Reset-Preview; Request-MergeStatus })
     $script:Controls.Changes.Add_ItemChecked({ Update-ChangeSelection $_.Item })
     $script:Controls.ChangeSearch.Add_TextChanged({ Update-FilteredChanges })
     $script:Controls.ClearSearch.Add_Click({ $script:Controls.ChangeSearch.Clear() })
+    $script:Controls.HideMerged.Add_CheckedChanged({ Update-FilteredChanges })
     $script:Controls.CheckUpdate.Add_Click({ Start-UpdateOperation 'Check' -Manual })
     $script:Controls.SettingsMenu.Add_Click({ Show-UpdateSettings })
     $script:Controls.ManualChanges.Add_TextChanged({ Reset-Preview })
@@ -1208,7 +1310,7 @@ function Start-MergeUi {
     $script:Controls.User.Text = $defaults.User
     $timer = New-Object Windows.Forms.Timer
     $timer.Interval = 150
-    $timer.Add_Tick({ Update-UiWorker; Update-UpdateWorker })
+    $timer.Add_Tick({ Update-UiWorker; Update-UpdateWorker; if (-not ($HeadlessTest -or $SmokeTest -or $ReadOnlyStartupTest)) { Start-QueuedMergeStatus } })
     $timer.Start()
     try {
         if ($HeadlessTest) { Test-UiLayout $form -Headless; Test-UiState; return }
@@ -1597,6 +1699,7 @@ function Test-WorkerCompletion {
 }
 
 function Test-ChangeSearch {
+    Test-MergeStatusDisplay
     Test-AuthorSearchCollision
     [void]$script:Controls.Changes.Handle
     $records = @(
@@ -1621,6 +1724,50 @@ function Test-ChangeSearch {
     if (-not $script:Controls.Changes.Items[0].Checked -or $script:SelectedChanges.Count -ne 1) { throw 'Clearing search lost selection state' }
     $script:Controls.Source.SelectedItem = '//Depot/Target'
     if ($script:SelectedChanges.Count -ne 0 -or $script:Controls.Changes.Items.Count -ne 0) { throw 'Source change retained old CL selections' }
+}
+
+function Test-MergeStatusDisplay {
+    [void]$script:Controls.Changes.Handle
+    $controls = $script:Controls
+    $source = $controls.Source.Text; $target = $controls.Target.Text
+    if (-not $source -or -not $target) { throw 'Merge status test needs a selected source and target' }
+    $records = @(301, 302, 303 | ForEach-Object { [pscustomobject]@{ change = "$_"; user = 'tester'; time = '1700000000'; desc = "CL $_" } })
+    Show-ChangeList $records
+    if ($script:MergeStatusState -ne 'Pending' -or -not $script:MergeStatusQueued -or $controls.Changes.Items[0].SubItems[1].Text -ne '…') {
+        throw 'Loading CLs did not queue a merge status query'
+    }
+    Show-MergeStatus ([pscustomobject]@{ Source = $source; Target = $target; Unmerged = @(302) })
+    if (-not $controls.HideMerged.Checked -or $controls.Changes.Items.Count -ne 1 -or $controls.Changes.Items[0].Text -ne '302' -or
+        -not $controls.SearchCount.Text.Contains('已隐藏已合并 2')) { throw 'Merged CLs were not hidden by default' }
+    $controls.HideMerged.Checked = $false
+    $merged = $controls.Changes.Items[0]; $unmerged = $controls.Changes.Items[1]
+    if ($merged.SubItems[1].Text -ne '已合并' -or $merged.ForeColor.ToArgb() -ne $script:UiColors.DisabledText.ToArgb() -or
+        $unmerged.SubItems[1].Text -ne '未合并' -or $unmerged.ForeColor.ToArgb() -ne $script:UiColors.Text.ToArgb()) {
+        throw 'Merge status column or gray merged rows are wrong'
+    }
+    Test-MergedSelectionNotice $merged
+    Show-MergeStatus ([pscustomobject]@{ Source = $source; Target = '//Depot/Stale'; Unmerged = @() })
+    if ($script:MergeStatusState -ne 'Pending' -or -not $script:MergeStatusQueued) { throw 'Stale merge status result was applied' }
+    Set-MergeStatusFailed 'simulated'
+    if ($controls.Changes.Items[0].SubItems[1].Text -ne '未知' -or $script:MergeStatusQueued) { throw 'Failed merge status not shown as unknown' }
+    $controls.Target.SelectedIndex = -1
+    if ($script:MergeStatusState -ne '' -or $script:MergeStatusQueued) { throw 'Clearing the target kept a merge status' }
+    $controls.Target.SelectedItem = $target
+    if ($script:MergeStatusState -ne 'Pending' -or -not $script:MergeStatusQueued) { throw 'Changing target did not re-query merge status' }
+    $script:MergeStatusQueued = $false
+    $controls.HideMerged.Checked = $true
+    Clear-SourceChanges
+    Write-Output 'Merge status passed: queued after load and target change, merged column/gray rows, hidden by default, selection notice, stale and failed results.'
+}
+
+function Test-MergedSelectionNotice {
+    param($Item)
+    $Item.Checked = $true
+    if (-not $script:Controls.SelectedDetails.Text.Contains('注意：已合并到目标')) { throw 'Checked merged CL has no notice' }
+    $script:Controls.ForceReintegrate.Checked = $true
+    if ($script:Controls.SelectedDetails.Text.Contains('注意：已合并到目标')) { throw 'Merged notice shown while reintegration is forced' }
+    $script:Controls.ForceReintegrate.Checked = $false
+    $Item.Checked = $false
 }
 
 function Test-AuthorSearchCollision {
@@ -1765,10 +1912,11 @@ function Test-TargetScope {
     if ($script:Controls.Target.Items.Count -ne 1 -or $script:Controls.Target.Text -eq '//Depot/Other' -or $script:Controls.Start.Enabled) { throw 'Disabling cross mode retained invalid target/preview' }
     $script:Controls.Source.SelectedItem = '//Depot/Target'
     if ($script:Controls.Target.Items.Count -ne 1 -or -not $script:Controls.Target.Items.Contains('//Depot/Dev')) { throw 'Main targets ignore normal merge flow' }
+    if ($script:Controls.Target.Text -cne '//Depot/Dev') { throw 'Choosing a source did not auto-select the first available target' }
     $script:Controls.AllowCrossBranch.Checked = $true
     $script:Controls.Target.SelectedItem = '//Depot/Source'
     $script:Controls.AllowCrossBranch.Checked = $false
-    if ($script:Controls.Target.Text) { throw 'Disabling cross mode retained an unsupported target' }
+    if ($script:Controls.Target.Text -cne '//Depot/Dev') { throw 'Disabling cross mode did not fall back to the first supported target' }
     $script:Controls.Source.SelectedIndex = -1
     if ($script:Controls.Target.Enabled -or $script:Controls.Target.Items.Count -gt 0 -or $script:Controls.AllowCrossBranch.Enabled) { throw 'No-source target/mode controls are active' }
     $script:Controls.Source.SelectedItem = '//Depot/Source'

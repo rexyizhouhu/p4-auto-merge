@@ -42,10 +42,11 @@ function Set-TestFixture {
             SourceOptions = 'allsubmit unlocked toparent nofromparent mergedown'
             SourceIsolate = $false; ParentRemap = $false; TargetParent = 'none'
             Info = @{ serverVersion = 'P4D/TEST/2025.2'; unicode = 'enabled' }; ProbeFailure = $false
+            Unmerged = @()
         }
         $script:P4Runner = {
             param($arguments, $inputText, $timeout)
-            $verbs = @('client', 'opened', 'describe', 'merge', 'integrate', 'reconcile', 'change', 'resolve', 'where', 'stream', 'info')
+            $verbs = @('client', 'opened', 'describe', 'merge', 'integrate', 'interchanges', 'reconcile', 'change', 'resolve', 'where', 'stream', 'info')
             $verbIndex = 0
             while ($verbIndex -lt $arguments.Count -and $arguments[$verbIndex] -notin $verbs) { $verbIndex++ }
             if ($verbIndex -ge $arguments.Count) { throw 'Test runner received unknown command.' }
@@ -76,6 +77,10 @@ function Install-FixtureHelpers {
                 'describe' { return Get-FixtureDescription }
                 'merge' { return Get-FixtureMerge $Command }
                 'integrate' { return Get-FixtureMerge $Command }
+                'interchanges' {
+                    if (-not $script:Fixture.Unmerged) { return @{ severity = 2; generic = 17; data = '//Depot/Source/...@1,#head - all revision(s) already integrated.' } }
+                    return @($script:Fixture.Unmerged | ForEach-Object { @{ change = "$_"; user = 'tester' } })
+                }
                 'reconcile' { return Get-FixtureReconcile $Command }
                 'where' { return Get-FixtureMapping $Command }
                 'change' { return @{ Status = $script:Fixture.PendingStatus; Client = 'test-client'; User = $script:Fixture.PendingUser } }
@@ -345,6 +350,19 @@ try {
     }
     Test-Case 'Native process receives exact no-BOM UTF8 form bytes and restores encoding on failure' {
         Test-NativeInputEncoding
+    }
+    Test-Case 'Merge status queries unmerged CLs read-only within the loaded range' {
+        $request = New-TestRequest
+        $request | Add-Member NoteProperty OldestChange 101
+        & $module { $script:Fixture.Unmerged = @(102, 105) }
+        $status = Invoke-MergeAction 'MergeStatus' $request $null
+        Assert-True ((@($status.Unmerged) -join ',') -eq '102,105' -and $status.Target -eq '//Depot/Target') 'Unmerged CLs not parsed'
+        $call = @(Get-TestCalls | Where-Object { $_.Command[0] -eq 'interchanges' })[-1].Command
+        Assert-True (($call -join ' ') -ceq 'interchanges -F //Depot/Source/...@101,#head //Depot/Target/...') 'Wrong interchanges range or direction'
+        & $module { $script:Fixture.Unmerged = @() }
+        Assert-True (@((Invoke-MergeAction 'MergeStatus' $request $null).Unmerged).Count -eq 0) 'Already-integrated warning was not treated as fully merged'
+        $request.OldestChange = 0
+        Assert-Throws { Invoke-MergeAction 'MergeStatus' $request $null } '范围'
     }
     Test-Case 'CL parsing: sort, deduplicate, reject ranges and invalid numbers' {
         $numbers = @(ConvertTo-ChangeNumbers '102, 101 102;103')

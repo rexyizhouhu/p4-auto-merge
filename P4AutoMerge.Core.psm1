@@ -141,6 +141,7 @@ function Assert-ExpectedWarning {
         opened = '(?i)^(?:.* - )?file\(s\) not opened on this client\.\s*$'
         merge = $alreadyIntegrated
         integrate = $alreadyIntegrated
+        interchanges = $alreadyIntegrated
         resolve = '(?i)^(?:.* - )?no file\(s\) to resolve\.\s*$'
         reconcile = '(?i)^(?:.* - )?no file\(s\) to reconcile\.\s*$'
     }
@@ -430,6 +431,21 @@ function Get-SourceChanges {
     if ($limit -lt 1 -or $limit -gt 1000) { throw 'CL 列表数量必须为 1–1000。' }
     return @(Invoke-P4 $Request.Context @('changes', '-s', 'submitted', '-l', '-m', "$limit", "$($Request.Source)/...") |
         Where-Object { Get-OptionalValue $_ 'change' })
+}
+
+# 只读查询来源中尚未合并到目标的 CL，范围限定在已加载的最早 CL 之后。
+# 统一用路径写法：父子双向与跨分支都适用，且与流写法在已加载范围内结果一致。
+# 任一文件未合并的 CL 都会被列为未合并，因此部分合并的 CL 视为未合并。
+function Get-MergeStatus {
+    param($Request)
+    Assert-DepotRoot $Request.Source
+    Assert-DepotRoot $Request.Target
+    if ($Request.Source -ceq $Request.Target) { throw '来源分支与目标分支不能相同。' }
+    $oldest = [int]$Request.OldestChange
+    if ($oldest -lt 1) { throw '缺少已加载的来源 CL 范围。' }
+    $command = @('interchanges', '-F', "$($Request.Source)/...@$oldest,#head", "$($Request.Target)/...")
+    $unmerged = @(Invoke-P4 $Request.Context $command | ForEach-Object { Get-OptionalValue $_ 'change' } | Where-Object { $_ })
+    return [pscustomobject]@{ Source = $Request.Source; Target = $Request.Target; Unmerged = @($unmerged | ForEach-Object { [int]$_ }) }
 }
 
 function Get-SourceTargetFiles {
@@ -757,6 +773,7 @@ function Invoke-MergeAction {
     switch ($Action) {
         'Catalog' { return Get-P4Catalog $Request.Context }
         'Changes' { return Get-SourceChanges $Request }
+        'MergeStatus' { return Get-MergeStatus $Request }
         'Preview' { return Get-MergePreview $Request }
         { $_ -in @('Start', 'Resume', 'Finish') } {
             return Invoke-WithWorkspaceLock $Request.Context { Invoke-SessionOperation $Action $Request }
