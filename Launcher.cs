@@ -11,9 +11,9 @@ using System.Web.Script.Serialization;
 [assembly: AssemblyTitle("P4 Auto Merge")]
 [assembly: AssemblyDescription("P4 auto merge with safe resolve and manual conflict handling")]
 [assembly: AssemblyProduct("P4 Auto Merge")]
-[assembly: AssemblyVersion("1.0.7.0")]
-[assembly: AssemblyFileVersion("1.0.7.0")]
-[assembly: AssemblyInformationalVersion("1.0.7")]
+[assembly: AssemblyVersion("1.0.8.0")]
+[assembly: AssemblyFileVersion("1.0.8.0")]
+[assembly: AssemblyInformationalVersion("1.0.8")]
 
 internal static class Program
 {
@@ -146,6 +146,9 @@ internal static class Program
                 Path.Combine(root, GuiName) + "\" " + mode,
             WorkingDirectory = root,
             UseShellExecute = false,
+            // UseShellExecute = false 时 .NET Framework 忽略 WindowStyle，系统会先为 powershell.exe 弹出控制台窗口，
+            // 待脚本执行 -WindowStyle Hidden 才隐藏，造成启动时黑窗一闪；CreateNoWindow 让控制台从一开始就不显示。
+            CreateNoWindow = true,
             WindowStyle = ProcessWindowStyle.Hidden,
             RedirectStandardOutput = true,
             RedirectStandardError = true,

@@ -35,12 +35,12 @@ $script:ResolveModes = @(Get-ResolveModes)
 $script:UpdatingResolveModes = $false
 # 配色参考 VS Code 主题：底色区分区域，输入区接近白色或编辑器底色，强调色只用于按钮，文字和边框保持中性色。
 $script:UiThemes = [ordered]@{
-    Blue = @{ Label = '柔和蓝（默认）'; Dark = $false; Colors = @{
-        Background = '#E3EFFB'; Field = '#FFFFFF'; Button = '#5A7DA3'; ButtonHover = '#4D6D90'; ButtonPressed = '#42607F'
-        ButtonDisabled = '#D3DAE2'; Border = '#BFC9D4'; Divider = '#C9D5E2'; Text = '#2E3440'; DisabledText = '#8A94A0'; Hover = '#D6E4F2' } }
-    LightModern = @{ Label = 'VS Code 浅色 (Light Modern)'; Dark = $false; Colors = @{
+    LightModern = @{ Label = 'VS Code 浅色 (Light Modern，默认)'; Dark = $false; Colors = @{
         Background = '#F8F8F8'; Field = '#FFFFFF'; Button = '#005FB8'; ButtonHover = '#0258A8'; ButtonPressed = '#024C91'
         ButtonDisabled = '#E1E1E1'; Border = '#CECECE'; Divider = '#E0E0E0'; Text = '#3B3B3B'; DisabledText = '#9A9A9A'; Hover = '#E8E8E8' } }
+    Blue = @{ Label = '柔和蓝'; Dark = $false; Colors = @{
+        Background = '#E3EFFB'; Field = '#FFFFFF'; Button = '#5A7DA3'; ButtonHover = '#4D6D90'; ButtonPressed = '#42607F'
+        ButtonDisabled = '#D3DAE2'; Border = '#BFC9D4'; Divider = '#C9D5E2'; Text = '#2E3440'; DisabledText = '#8A94A0'; Hover = '#D6E4F2' } }
     QuietLight = @{ Label = 'VS Code 安静浅色 (Quiet Light)'; Dark = $false; Colors = @{
         Background = '#F3F3F3'; Field = '#FFFFFF'; Button = '#705697'; ButtonHover = '#634C86'; ButtonPressed = '#554174'
         ButtonDisabled = '#E0DCE6'; Border = '#C9C9C9'; Divider = '#DDDDDD'; Text = '#333333'; DisabledText = '#9A9A9A'; Hover = '#E4E0EB' } }
@@ -51,6 +51,7 @@ $script:UiThemes = [ordered]@{
         Background = '#1F1F1F'; Field = '#2B2B2B'; Button = '#0078D4'; ButtonHover = '#026EC1'; ButtonPressed = '#005FA8'
         ButtonDisabled = '#3A3D41'; Border = '#454545'; Divider = '#333333'; Text = '#CCCCCC'; DisabledText = '#6E7681'; Hover = '#37373D' } }
 }
+$script:DefaultUiTheme = 'LightModern'
 $script:UiThemeName = ''
 $script:UiColors = @{}
 $script:NativeThemeLoaded = $false
@@ -79,7 +80,7 @@ function New-Control {
 
 function Set-UiTheme {
     param([string]$Name)
-    if (-not $script:UiThemes.Contains($Name)) { $Name = 'Blue' }
+    if (-not $script:UiThemes.Contains($Name)) { $Name = $script:DefaultUiTheme }
     $theme = $script:UiThemes[$Name]
     $colors = @{ Dark = [bool]$theme.Dark; ButtonText = [Drawing.Color]::White }
     foreach ($key in $theme.Colors.Keys) { $colors[$key] = [Drawing.ColorTranslator]::FromHtml($theme.Colors[$key]) }
@@ -1410,6 +1411,10 @@ function Test-ThemeControls {
     $original = $script:UiThemeName
     $controls = $script:Controls
     try {
+        Set-UiTheme ''
+        if ($script:UiThemeName -ne 'LightModern' -or @($script:UiThemes.Keys)[0] -ne 'LightModern') {
+            throw 'VS Code light theme is not the default first choice'
+        }
         if ($controls.MenuBar.Dock -ne 'Top' -or $controls.MenuBar.Top -ne 0 -or $controls.SettingsMenu.Text -ne '设置' -or
             $controls.CheckUpdate.Text -ne '检查更新' -or $controls.CheckUpdate.Parent -ne $controls.UpdateBar) {
             throw 'Settings menu is not at the top-left or check update button is missing'

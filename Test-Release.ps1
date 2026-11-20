@@ -81,6 +81,43 @@ function Invoke-PackagedCheck {
     finally { $process.Dispose() }
 }
 
+# 发布 EXE 是 GUI 程序，界面由其拉起的 powershell.exe 承载；该子进程若带控制台窗口，双击启动时会一闪黑窗。
+# 通过附加到子进程控制台并读取其窗口句柄判断，句柄必须为 0。
+function Assert-NoConsoleWindow {
+    param([string]$Exe, [string]$Root)
+    $probe = Join-Path $Root 'console-probe.ps1'
+    $result = Join-Path $Root 'console-probe.txt'
+    [IO.File]::WriteAllText($probe, @'
+param([int]$TargetId, [string]$Out)
+Add-Type -Namespace P4AutoMergeTest -Name ConsoleProbe -MemberDefinition '[DllImport("kernel32.dll")] public static extern bool FreeConsole(); [DllImport("kernel32.dll")] public static extern bool AttachConsole(uint pid); [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();'
+[void][P4AutoMergeTest.ConsoleProbe]::FreeConsole()
+$attached = [P4AutoMergeTest.ConsoleProbe]::AttachConsole([uint32]$TargetId)
+$window = [P4AutoMergeTest.ConsoleProbe]::GetConsoleWindow()
+[void][P4AutoMergeTest.ConsoleProbe]::FreeConsole()
+[IO.File]::WriteAllText($Out, "$attached $window")
+'@, (New-Object Text.UTF8Encoding($true)))
+    $launcher = Start-Process -FilePath $Exe -ArgumentList '-HeadlessTest' -WorkingDirectory $env:TEMP -PassThru
+    try {
+        $child = $null
+        for ($index = 0; $index -lt 200 -and -not $child; $index++) {
+            Start-Sleep -Milliseconds 50
+            $child = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($launcher.Id) AND Name='powershell.exe'"
+        }
+        if (-not $child) { throw '未找到发布 EXE 拉起的界面进程。' }
+        $info = New-Object Diagnostics.ProcessStartInfo('powershell.exe',
+            ('-NoProfile -ExecutionPolicy Bypass -File "{0}" {1} "{2}"' -f $probe, $child.ProcessId, $result))
+        $info.UseShellExecute = $false
+        $info.CreateNoWindow = $true
+        $process = [Diagnostics.Process]::Start($info)
+        if (-not $process.WaitForExit(30000)) { throw '控制台窗口探测超时。' }
+        $state = ([IO.File]::ReadAllText($result)).Split(' ')
+        if ($state[0] -ne 'True') { throw '无法附加到界面进程的控制台。' }
+        if ($state[1] -ne '0') { throw '启动界面时会显示控制台窗口（黑窗一闪）。' }
+    }
+    finally { if (-not $launcher.WaitForExit(60000)) { & taskkill.exe /PID $launcher.Id /T /F | Out-Null } }
+    Write-Output 'PASS packaged EXE starts the PowerShell UI host without a console window.'
+}
+
 $archivePath = (Resolve-Path -LiteralPath $ZipPath).Path
 Assert-ReleaseArchive $archivePath
 $testRoot = Join-Path $env:TEMP ('P4AutoMerge-ReleaseTest-' + [guid]::NewGuid().ToString('N'))
@@ -92,4 +129,5 @@ Assert-ReleaseContents $package
 $exe = Join-Path $package 'P4AutoMerge.exe'
 Invoke-PackagedCheck $exe '-HeadlessTest' 'UI state tests passed'
 Invoke-PackagedCheck $exe '-ReadOnlyStartupTest' 'READ-ONLY STARTUP OK'
+Assert-NoConsoleWindow $exe $testRoot
 Write-Output 'Release verification passed. No mouse/keyboard input, visible test form or P4 write operations.'
