@@ -33,24 +33,34 @@ $script:ChangeDetails = @{}
 $script:SelectedPreviewBuildCount = 0
 $script:ResolveModes = @(Get-ResolveModes)
 $script:UpdatingResolveModes = $false
-$script:UiColors = @{
-    Background = [Drawing.ColorTranslator]::FromHtml('#E3EFFB')
-    Field = [Drawing.ColorTranslator]::FromHtml('#F1F7FE')
-    Button = [Drawing.ColorTranslator]::FromHtml('#6A92C2')
-    ButtonText = [Drawing.Color]::White
-    ButtonHover = [Drawing.ColorTranslator]::FromHtml('#5A80AE')
-    ButtonPressed = [Drawing.ColorTranslator]::FromHtml('#4C6F98')
-    ButtonDisabled = [Drawing.ColorTranslator]::FromHtml('#D5D8DC')
-    Border = [Drawing.ColorTranslator]::FromHtml('#A9C4E2')
-    Divider = [Drawing.ColorTranslator]::FromHtml('#B7D3F0')
-    Text = [Drawing.ColorTranslator]::FromHtml('#24364B')
-    Hover = [Drawing.ColorTranslator]::FromHtml('#C3DDF7')
+# 配色参考 VS Code 主题：底色区分区域，输入区接近白色或编辑器底色，强调色只用于按钮，文字和边框保持中性色。
+$script:UiThemes = [ordered]@{
+    Blue = @{ Label = '柔和蓝（默认）'; Dark = $false; Colors = @{
+        Background = '#E3EFFB'; Field = '#FFFFFF'; Button = '#5A7DA3'; ButtonHover = '#4D6D90'; ButtonPressed = '#42607F'
+        ButtonDisabled = '#D3DAE2'; Border = '#BFC9D4'; Divider = '#C9D5E2'; Text = '#2E3440'; DisabledText = '#8A94A0'; Hover = '#D6E4F2' } }
+    LightModern = @{ Label = 'VS Code 浅色 (Light Modern)'; Dark = $false; Colors = @{
+        Background = '#F8F8F8'; Field = '#FFFFFF'; Button = '#005FB8'; ButtonHover = '#0258A8'; ButtonPressed = '#024C91'
+        ButtonDisabled = '#E1E1E1'; Border = '#CECECE'; Divider = '#E0E0E0'; Text = '#3B3B3B'; DisabledText = '#9A9A9A'; Hover = '#E8E8E8' } }
+    QuietLight = @{ Label = 'VS Code 安静浅色 (Quiet Light)'; Dark = $false; Colors = @{
+        Background = '#F3F3F3'; Field = '#FFFFFF'; Button = '#705697'; ButtonHover = '#634C86'; ButtonPressed = '#554174'
+        ButtonDisabled = '#E0DCE6'; Border = '#C9C9C9'; Divider = '#DDDDDD'; Text = '#333333'; DisabledText = '#9A9A9A'; Hover = '#E4E0EB' } }
+    SolarizedLight = @{ Label = 'VS Code Solarized 浅色'; Dark = $false; Colors = @{
+        Background = '#EEE8D5'; Field = '#FDF6E3'; Button = '#586E75'; ButtonHover = '#4B5F66'; ButtonPressed = '#3F5056'
+        ButtonDisabled = '#DDD6C1'; Border = '#CFC6AE'; Divider = '#DDD6C1'; Text = '#475B62'; DisabledText = '#93A1A1'; Hover = '#E3DCC7' } }
+    DarkModern = @{ Label = 'VS Code 深色 (Dark Modern)'; Dark = $true; Colors = @{
+        Background = '#1F1F1F'; Field = '#2B2B2B'; Button = '#0078D4'; ButtonHover = '#026EC1'; ButtonPressed = '#005FA8'
+        ButtonDisabled = '#3A3D41'; Border = '#454545'; Divider = '#333333'; Text = '#CCCCCC'; DisabledText = '#6E7681'; Hover = '#37373D' } }
 }
+$script:UiThemeName = ''
+$script:UiColors = @{}
+$script:NativeThemeLoaded = $false
 $script:SelectedPanelHeight = 130
 $script:ActionRowHeight = 45
 $script:OutputPages = @(@('Details', '预览 / 待手工处理'), @('Log', '运行日志'))
 $script:OutputPage = ''
 $script:OutputTabHeight = 30
+$script:MenuBarHeight = 28
+$script:DescriptionColumnWidth = 650
 
 function New-Control {
     param([string]$Type, [string]$Name, [string]$Text = '')
@@ -64,21 +74,103 @@ function New-Control {
     return $control
 }
 
-# 面板、标签、复选框等未显式设置底色的控件继承父容器底色，因此只需给窗口、标签页和输入类控件上色。
-function Set-ControlColors {
-    param($Control)
-    $Control.ForeColor = $script:UiColors.Text
-    if ($Control -is [Windows.Forms.Button]) { Set-ButtonColors $Control; return }
-    if ($Control -is [Windows.Forms.Form] -or $Control -is [Windows.Forms.TabPage]) {
-        $Control.BackColor = $script:UiColors.Background
-        return
-    }
-    if (-not (Test-FieldControl $Control)) { return }
-    $Control.BackColor = $script:UiColors.Field
-    if ($Control -is [Windows.Forms.ComboBox]) { Set-ComboColors $Control }
+function Set-UiTheme {
+    param([string]$Name)
+    if (-not $script:UiThemes.Contains($Name)) { $Name = 'Blue' }
+    $theme = $script:UiThemes[$Name]
+    $colors = @{ Dark = [bool]$theme.Dark; ButtonText = [Drawing.Color]::White }
+    foreach ($key in $theme.Colors.Keys) { $colors[$key] = [Drawing.ColorTranslator]::FromHtml($theme.Colors[$key]) }
+    $script:UiThemeName = $Name
+    $script:UiColors = $colors
 }
 
-# 带视觉样式的下拉列表忽略 BackColor，自绘选中项和下拉项才能显示浅蓝底色。
+function Update-UiTheme {
+    param($Root)
+    Update-ThemeTree $Root
+    $Root.Invalidate($true)
+}
+
+function Update-ThemeTree {
+    param($Control)
+    Update-ControlColors $Control
+    foreach ($child in $Control.Controls) { Update-ThemeTree $child }
+}
+
+# 事件处理只在创建时注册一次，颜色由 Update-ControlColors 按当前主题设置，切换主题时可整棵控件树重新上色。
+function Set-ControlColors {
+    param($Control)
+    if ($Control -is [Windows.Forms.Button]) {
+        $Control.UseVisualStyleBackColor = $false
+        $Control.FlatStyle = 'Flat'
+        $Control.Add_EnabledChanged({ Update-ControlColors $this })
+    }
+    elseif ($Control -is [Windows.Forms.ComboBox]) { Set-ComboColors $Control }
+    if (Test-NativeThemeControl $Control) { $Control.Add_HandleCreated({ Set-NativeTheme $this }) }
+    Update-ControlColors $Control
+}
+
+# 面板、标签、复选框等未显式设置底色的控件继承父容器底色，因此只需给窗口、分隔区和输入类控件设置底色。
+function Update-ControlColors {
+    param($Control)
+    if ($Control -is [Windows.Forms.Button]) { Update-ButtonColors $Control; return }
+    $Control.ForeColor = $script:UiColors.Text
+    if ($Control -is [Windows.Forms.Form] -or $Control -is [Windows.Forms.SplitterPanel]) {
+        $Control.BackColor = $script:UiColors.Background
+    }
+    elseif ($Control -is [Windows.Forms.SplitContainer]) { $Control.BackColor = $script:UiColors.Divider }
+    elseif ((Test-FieldControl $Control) -or $Control.Tag -eq 'TextFrame') { $Control.BackColor = $script:UiColors.Field }
+    # 系统网格线固定为浅灰，深色主题下会形成刺眼的白线。
+    if ($Control -is [Windows.Forms.ListView]) { $Control.GridLines = -not $script:UiColors.Dark }
+    if ($Control.IsHandleCreated -and (Test-NativeThemeControl $Control)) { Set-NativeTheme $Control }
+}
+
+function Test-NativeThemeControl {
+    param($Control)
+    return ($Control -is [Windows.Forms.Form] -or $Control -is [Windows.Forms.RichTextBox] -or $Control -is [Windows.Forms.ListView])
+}
+
+# 标题栏、滚动条和列表表头由系统绘制，深色主题需通过 DWM / uxtheme 切换；从未使用深色主题时不加载。
+function Set-NativeTheme {
+    param($Control)
+    if (-not $script:UiColors.Dark -and -not $script:NativeThemeLoaded) { return }
+    if (-not $script:NativeThemeLoaded) {
+        Add-Type -Namespace P4AutoMerge -Name NativeTheme -MemberDefinition @'
+[DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] public static extern int SetWindowTheme(IntPtr hwnd, string app, string idList);
+[DllImport("uxtheme.dll", EntryPoint = "#135")] public static extern int SetPreferredAppMode(int mode);
+[DllImport("uxtheme.dll", EntryPoint = "#133")] public static extern bool AllowDarkModeForWindow(IntPtr hwnd, bool allow);
+[DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+[DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam);
+[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+'@
+        $script:NativeThemeLoaded = $true
+        # 滚动条和表头的深色样式需先允许应用使用深色模式（uxtheme 未公开序号，自 Windows 10 1903 起可用，旧系统忽略）。
+        try { [void][P4AutoMerge.NativeTheme]::SetPreferredAppMode(1) } catch { }
+    }
+    $dark = [bool]$script:UiColors.Dark
+    if ($Control -is [Windows.Forms.Form]) {
+        $value = [int]$dark
+        [void][P4AutoMerge.NativeTheme]::DwmSetWindowAttribute($Control.Handle, 20, [ref]$value, 4)
+        # SWP_FRAMECHANGED | NOSIZE | NOMOVE | NOZORDER | NOACTIVATE：立即重绘已显示窗口的标题栏。
+        [void][P4AutoMerge.NativeTheme]::SetWindowPos($Control.Handle, [IntPtr]::Zero, 0, 0, 0, 0, 0x37)
+        return
+    }
+    Set-WindowDarkMode $Control.Handle $dark 'DarkMode_Explorer'
+    if ($Control -is [Windows.Forms.ListView]) {
+        $header = [P4AutoMerge.NativeTheme]::SendMessage($Control.Handle, 0x101F, [IntPtr]::Zero, [IntPtr]::Zero)
+        if ($header -ne [IntPtr]::Zero) { Set-WindowDarkMode $header $dark 'DarkMode_ItemsView' }
+    }
+}
+
+function Set-WindowDarkMode {
+    param([IntPtr]$Handle, [bool]$Dark, [string]$DarkTheme)
+    try { [void][P4AutoMerge.NativeTheme]::AllowDarkModeForWindow($Handle, $Dark) } catch { }
+    $theme = $null
+    if ($Dark) { $theme = $DarkTheme }
+    [void][P4AutoMerge.NativeTheme]::SetWindowTheme($Handle, $theme, $null)
+    [void][P4AutoMerge.NativeTheme]::SendMessage($Handle, 0x031A, [IntPtr]::Zero, [IntPtr]::Zero)
+}
+
+# 带视觉样式的下拉列表忽略 BackColor，自绘选中项和下拉项才能显示主题底色。
 function Set-ComboColors {
     param($Combo)
     $Combo.FlatStyle = 'Flat'
@@ -97,10 +189,27 @@ function Write-ComboItem {
     finally { $brush.Dispose() }
     if ($Event.Index -lt 0) { return }
     $fore = $script:UiColors.Text
-    if (-not $Combo.Enabled) { $fore = [Drawing.SystemColors]::GrayText }
+    if (-not $Combo.Enabled) { $fore = $script:UiColors.DisabledText }
     $flags = [Windows.Forms.TextFormatFlags]'VerticalCenter, Left, EndEllipsis, NoPrefix'
     [Windows.Forms.TextRenderer]::DrawText($Event.Graphics, $Combo.GetItemText($Combo.Items[$Event.Index]),
         $Combo.Font, $Event.Bounds, $fore, $flags)
+}
+
+# 带视觉样式的列表表头固定为系统浅色，自绘后才能跟随主题；数据行仍由系统绘制以保留复选框和选中效果。
+function Write-ListHeader {
+    param($Event)
+    $bounds = $Event.Bounds
+    $brush = New-Object Drawing.SolidBrush($script:UiColors.Field)
+    $pen = New-Object Drawing.Pen($script:UiColors.Border)
+    try {
+        $Event.Graphics.FillRectangle($brush, $bounds)
+        $Event.Graphics.DrawLine($pen, $bounds.Right - 1, $bounds.Top + 3, $bounds.Right - 1, $bounds.Bottom - 4)
+        $Event.Graphics.DrawLine($pen, $bounds.Left, $bounds.Bottom - 1, $bounds.Right - 1, $bounds.Bottom - 1)
+    }
+    finally { $brush.Dispose(); $pen.Dispose() }
+    $text = New-Object Drawing.Rectangle(($bounds.X + 6), $bounds.Y, [Math]::Max(0, $bounds.Width - 10), $bounds.Height)
+    $flags = [Windows.Forms.TextFormatFlags]'VerticalCenter, Left, EndEllipsis, NoPrefix'
+    [Windows.Forms.TextRenderer]::DrawText($Event.Graphics, $Event.Header.Text, $Event.Font, $text, $script:UiColors.Text, $flags)
 }
 
 function Test-FieldControl {
@@ -109,18 +218,28 @@ function Test-FieldControl {
         $Control -is [Windows.Forms.ComboBox] -or $Control -is [Windows.Forms.NumericUpDown])
 }
 
-function Set-ButtonColors {
-    param($Control)
-    $Control.UseVisualStyleBackColor = $false
-    $Control.FlatStyle = 'Flat'
-    $Control.ForeColor = $script:UiColors.ButtonText
-    $Control.FlatAppearance.MouseOverBackColor = $script:UiColors.ButtonHover
-    $Control.FlatAppearance.MouseDownBackColor = $script:UiColors.ButtonPressed
-    Update-ButtonState $Control
-    $Control.Add_EnabledChanged({ Update-ButtonState $this })
+function Update-ButtonColors {
+    param($Button)
+    if ($Button.Tag -eq 'MenuItem') { Set-MenuItemColors $Button; return }
+    if (@($script:OutputPages | Where-Object { $_[0] -eq [string]$Button.Tag }).Count) {
+        Set-OutputTabColors $Button ($Button.Tag -eq $script:OutputPage); return
+    }
+    $Button.ForeColor = $script:UiColors.ButtonText
+    $Button.FlatAppearance.MouseOverBackColor = $script:UiColors.ButtonHover
+    $Button.FlatAppearance.MouseDownBackColor = $script:UiColors.ButtonPressed
+    Update-ButtonState $Button
 }
 
-# 平面按钮禁用时文字固定为系统灰色，深蓝底上看不清，因此禁用时换成浅色底。
+function Set-MenuItemColors {
+    param($Item)
+    $Item.BackColor = $script:UiColors.Background
+    $Item.ForeColor = $script:UiColors.Text
+    $Item.FlatAppearance.BorderSize = 0
+    $Item.FlatAppearance.MouseOverBackColor = $script:UiColors.Hover
+    $Item.FlatAppearance.MouseDownBackColor = $script:UiColors.Hover
+}
+
+# 平面按钮禁用时文字固定为系统灰色，强调色底上看不清，因此禁用时换成低对比底色。
 function Update-ButtonState {
     param($Button)
     $back = $script:UiColors.ButtonDisabled
@@ -191,13 +310,28 @@ function New-SelectionPanel {
     $list.View = 'Details'
     $list.CheckBoxes = $true
     $list.FullRowSelect = $true
-    $list.GridLines = $true
+    $list.GridLines = -not $script:UiColors.Dark
     $list.ShowItemToolTips = $true
-    foreach ($column in @(@('源 CL', 85), @('提交人', 110), @('日期', 145), @('说明', 650))) {
+    $list.OwnerDraw = $true
+    $list.Add_DrawColumnHeader({ Write-ListHeader $_ })
+    $list.Add_DrawItem({ $_.DrawDefault = $true })
+    $list.Add_DrawSubItem({ $_.DrawDefault = $true })
+    # 表头右侧空白由系统绘制、无法跟随主题，因此让最后一列“说明”始终填满剩余宽度。
+    $list.Add_ClientSizeChanged({ Update-ListFillColumn $this })
+    foreach ($column in @(@('源 CL', 85), @('提交人', 110), @('日期', 145), @('说明', $script:DescriptionColumnWidth))) {
         [void]$list.Columns.Add($column[0], $column[1])
     }
     $grid.Controls.Add($list, 0, 2)
     return $grid
+}
+
+function Update-ListFillColumn {
+    param($List)
+    $last = $List.Columns[$List.Columns.Count - 1]
+    $used = 0
+    for ($index = 0; $index -lt $List.Columns.Count - 1; $index++) { $used += $List.Columns[$index].Width }
+    $width = [Math]::Max($script:DescriptionColumnWidth, $List.ClientSize.Width - $used)
+    if ($last.Width -ne $width) { $last.Width = $width }
 }
 
 function New-SearchToolbar {
@@ -244,8 +378,15 @@ function New-ListToolbar {
     $limit.Maximum = 1000
     $limit.Value = 1000
     $limit.Width = 70
-    # 系统上下箭头无法跟随主题配色，隐藏后仍可输入、滚轮或方向键调整。
+    # 系统上下箭头无法跟随主题配色，隐藏后仍可输入、滚轮或方向键调整；原箭头位置系统固定画白底，需用主题色补上。
     $limit.Controls[0].Visible = $false
+    $limit.Add_Paint({
+        $edit = $this.Controls[1]
+        $area = New-Object Drawing.Rectangle($edit.Right, 1, [Math]::Max(0, $this.ClientSize.Width - $edit.Right - 1), [Math]::Max(0, $this.ClientSize.Height - 2))
+        $brush = New-Object Drawing.SolidBrush($this.BackColor)
+        try { $_.Graphics.FillRectangle($brush, $area) }
+        finally { $brush.Dispose() }
+    })
     $bar.Controls.Add($limit)
     $count = New-Control 'Label' 'SearchCount' '尚未加载来源 CL'
     $count.AutoSize = $true
@@ -306,6 +447,7 @@ function New-TextArea {
     param([string]$Name)
     $frame = New-Control 'Panel' ($Name + 'Frame')
     $frame.Padding = New-Object Windows.Forms.Padding(6, 4, 1, 1)
+    $frame.Tag = 'TextFrame'
     $frame.BackColor = $script:UiColors.Field
     $frame.Add_Paint({
         [Windows.Forms.ControlPaint]::DrawBorder($_.Graphics, $this.ClientRectangle, $script:UiColors.Border, 'Solid')
@@ -365,8 +507,8 @@ function New-MainForm {
     $icon = Get-AppIcon
     if ($icon) { $form.Icon = $icon }
     $form.Font = New-Object Drawing.Font('Microsoft YaHei UI', 9)
-    $form.Size = New-Object Drawing.Size(1220, 995)
-    $form.MinimumSize = New-Object Drawing.Size(1020, 955)
+    $form.Size = New-Object Drawing.Size(1220, (995 + $script:MenuBarHeight))
+    $form.MinimumSize = New-Object Drawing.Size(1020, (955 + $script:MenuBarHeight))
     $form.StartPosition = 'CenterScreen'
     $layout = New-Control 'TableLayoutPanel' 'Layout'
     $layout.ColumnCount = 1
@@ -382,8 +524,28 @@ function New-MainForm {
     $layout.Controls.Add($status, 0, 2)
     $layout.Controls.Add((New-UpdateBar), 0, 3)
     $form.Controls.Add($layout)
+    # 停靠按添加的逆序进行，后加入的菜单栏先占据顶部，内容区再填满剩余空间。
+    $form.Controls.Add((New-MenuBar))
     Update-ResolveLabels
     return $form
+}
+
+function New-MenuBar {
+    $bar = New-Control 'FlowLayoutPanel' 'MenuBar'
+    $bar.Dock = 'Top'
+    $bar.Height = $script:MenuBarHeight
+    $bar.WrapContents = $false
+    $bar.Margin = New-Object Windows.Forms.Padding(0)
+    $bar.Padding = New-Object Windows.Forms.Padding(2, 1, 0, 0)
+    $item = New-Control 'Button' 'SettingsMenu' '设置'
+    $item.Tag = 'MenuItem'
+    $item.Dock = 'None'
+    $item.AutoSize = $true
+    $item.Margin = New-Object Windows.Forms.Padding(0)
+    $item.Padding = New-Object Windows.Forms.Padding(6, 0, 6, 0)
+    Update-ControlColors $item
+    $bar.Controls.Add($item)
+    return $bar
 }
 
 function Update-ResolveLabels {
@@ -951,7 +1113,8 @@ function Register-UiEvents {
     $script:Controls.Changes.Add_ItemChecked({ Update-ChangeSelection $_.Item })
     $script:Controls.ChangeSearch.Add_TextChanged({ Update-FilteredChanges })
     $script:Controls.ClearSearch.Add_Click({ $script:Controls.ChangeSearch.Clear() })
-    $script:Controls.UpdateSettings.Add_Click({ Show-UpdateSettings })
+    $script:Controls.CheckUpdate.Add_Click({ Start-UpdateOperation 'Check' -Manual })
+    $script:Controls.SettingsMenu.Add_Click({ Show-UpdateSettings })
     $script:Controls.ManualChanges.Add_TextChanged({ Reset-Preview })
     foreach ($name in @('Server', 'User')) {
         $script:Controls[$name].Add_TextChanged({ Reset-Catalog })
@@ -991,6 +1154,7 @@ function Reset-Catalog {
 }
 
 function Start-MergeUi {
+    Set-UiTheme $script:UpdatePreferences.Theme
     $form = New-MainForm
     Register-UiEvents
     $defaults = Get-P4Defaults
@@ -1113,6 +1277,7 @@ function Test-UiState {
     Test-ReintegrateControl
     Test-ResolveControls
     Test-UpdateControls
+    Test-ThemeControls
     Test-UpdateHandoff
     $request = [pscustomobject]@{ Source = $source; Target = $target; Context = $context; AllowCrossBranch = $false; ChangeText = '101 102' }
     $state = [pscustomobject]@{
@@ -1190,6 +1355,55 @@ function Test-UpdateControls {
         & $module { param($p) $script:PreferencesPath=$p } $oldPath
     }
     Write-Output 'Update dialog passed hidden checks: markdown release notes, update/cancel/skip, four frequencies, settings persisted on skip/cancel. No dialog displayed.'
+}
+
+function Test-ThemeControls {
+    $original = $script:UiThemeName
+    $controls = $script:Controls
+    try {
+        if ($controls.MenuBar.Dock -ne 'Top' -or $controls.MenuBar.Top -ne 0 -or $controls.SettingsMenu.Text -ne '设置' -or
+            $controls.CheckUpdate.Text -ne '检查更新' -or $controls.CheckUpdate.Parent -ne $controls.UpdateBar) {
+            throw 'Settings menu is not at the top-left or check update button is missing'
+        }
+        foreach ($name in @($script:UiThemes.Keys)) {
+            Set-UiTheme $name
+            Update-UiTheme $controls.Main
+            Test-ThemeColors $name
+        }
+        $dialog = New-UpdateDialog -Settings
+        try {
+            $buttons = @($dialog.Form.Controls[0].Controls | Where-Object { $_ -is [Windows.Forms.FlowLayoutPanel] } |
+                ForEach-Object { $_.Controls } | ForEach-Object { $_.Text })
+            $themeCombo = @($dialog.Form.Controls[0].Controls | Where-Object { $_ -is [Windows.Forms.ComboBox] })[1]
+            if (($buttons -join ',') -ne '保存,取消' -or $themeCombo.Items.Count -ne $script:UiThemes.Count) {
+                throw 'Settings dialog buttons or theme choices are wrong'
+            }
+            $themeCombo.SelectedIndex = [array]::IndexOf(@($script:UiThemes.Keys), 'DarkModern')
+            if ($script:UiThemeName -ne 'DarkModern' -or $dialog.Form.BackColor.ToArgb() -ne $script:UiColors.Background.ToArgb()) {
+                throw 'Theme choice did not preview in the settings dialog'
+            }
+            Test-ThemeColors 'DarkModern'
+        }
+        finally { $dialog.Form.Dispose() }
+    }
+    finally { Set-UiTheme $original; Update-UiTheme $controls.Main }
+    Write-Output "Themes passed: top-left settings menu, bottom check update, $($script:UiThemes.Count) themes applied live and previewed from settings."
+}
+
+function Test-ThemeColors {
+    param([string]$Name)
+    $colors = $script:UiColors
+    $expected = @(
+        @('Main', 'BackColor', 'Background'), @('Connect', 'BackColor', 'Button'), @('Details', 'BackColor', 'Field'),
+        @('DetailsFrame', 'BackColor', 'Field'), @('ContentSplit', 'BackColor', 'Divider'), @('Changes', 'BackColor', 'Field'),
+        @('SettingsMenu', 'BackColor', 'Background'), @('Status', 'ForeColor', 'Text'), @('DetailsTab', 'BackColor', 'Field')
+    )
+    foreach ($entry in $expected) {
+        if ($script:Controls[$entry[0]].($entry[1]).ToArgb() -ne $colors[$entry[2]].ToArgb()) {
+            throw "Theme $Name did not color $($entry[0]).$($entry[1])"
+        }
+    }
+    if ($script:Controls.Changes.GridLines -eq $colors.Dark) { throw "Theme $Name kept unsuitable list grid lines" }
 }
 
 function Test-MarkdownNotes {

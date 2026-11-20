@@ -78,7 +78,7 @@ function Add-RichText {
 function New-UpdateBar {
     $bar = New-Control 'FlowLayoutPanel' 'UpdateBar'
     $bar.WrapContents = $false
-    $button = New-Control 'Button' 'UpdateSettings' '更新 / 设置'
+    $button = New-Control 'Button' 'CheckUpdate' '检查更新'
     $button.AutoSize = $true
     $bar.Controls.Add($button)
     $label = New-Control 'Label' 'UpdateStatus' ("当前版本 $(Get-UpdateVersion)")
@@ -97,12 +97,30 @@ function New-UpdateFrequencyCombo {
     return $combo
 }
 
+# 选择即预览：主窗口和设置窗口立即换色，取消时由 Show-UpdateSettings 还原。
+function New-ThemeCombo {
+    $combo = New-Object Windows.Forms.ComboBox
+    Set-ControlColors $combo
+    $combo.DropDownStyle = 'DropDownList'
+    $combo.Dock = 'Fill'
+    $names = @($script:UiThemes.Keys)
+    $combo.Items.AddRange([object[]]@($names | ForEach-Object { $script:UiThemes[$_].Label }))
+    $combo.SelectedIndex = [array]::IndexOf($names, $script:UiThemeName)
+    $combo.Add_SelectedIndexChanged({
+        Set-UiTheme @($script:UiThemes.Keys)[$this.SelectedIndex]
+        Update-UiTheme $script:Controls.Main
+        $owner = $this.FindForm()
+        if ($owner) { Update-UiTheme $owner }
+    })
+    return $combo
+}
+
 function New-UpdateChoiceButtons {
     param($Dialog, [switch]$Settings)
     $bar = New-Object Windows.Forms.FlowLayoutPanel
     $bar.Dock = 'Fill'
     $entries = @(@('更新', 'Yes'), @('取消', 'Cancel'), @('跳过此版本', 'Ignore'))
-    if ($Settings) { $entries = @(@('检查更新', 'Yes'), @('保存', 'OK'), @('取消', 'Cancel')) }
+    if ($Settings) { $entries = @(@('保存', 'OK'), @('取消', 'Cancel')) }
     foreach ($entry in $entries) {
         $button = New-Object Windows.Forms.Button
         Set-ControlColors $button
@@ -122,52 +140,100 @@ function New-UpdateDialog {
     $dialog.Text = 'P4 自动合并 — 版本更新'
     $dialog.Size = New-Object Drawing.Size(760, 600)
     $dialog.MinimumSize = New-Object Drawing.Size(620, 440)
+    if ($Settings) {
+        $dialog.Text = 'P4 自动合并 — 设置'
+        $dialog.Size = New-Object Drawing.Size(520, 320)
+        $dialog.MinimumSize = $dialog.Size
+    }
     $dialog.Font = $script:Controls.Main.Font
     $dialog.Icon = $script:Controls.Main.Icon
     $dialog.StartPosition = 'CenterParent'
+    $label = New-DialogCaption '提醒更新频率：'
+    $combo = New-UpdateFrequencyCombo
+    # 高度 0 表示占满剩余空间：更新提示由日志区伸缩，设置窗口由按钮上方的空白伸缩。
+    if ($Settings) {
+        $rows = @(, @((New-UpdateDialogTitle -Settings), 48))
+        $rows += , @($label, 26)
+        $rows += , @($combo, 32)
+        $rows += , @((New-DialogCaption '界面主题（选择后立即预览）：'), 32)
+        $rows += , @((New-ThemeCombo), 32)
+        $rows += , @($null, 0)
+    }
+    else {
+        $rows = @(, @((New-UpdateDialogTitle), 65))
+        $rows += , @((New-UpdateDialogNotes), 0)
+        $rows += , @($label, 28)
+        $rows += , @($combo, 34)
+    }
+    $rows += , @((New-UpdateChoiceButtons $dialog -Settings:$Settings), 42)
+    $dialog.Controls.Add((New-UpdateDialogGrid $rows))
+    return [pscustomobject]@{ Form = $dialog; Frequency = $combo }
+}
+
+function New-DialogCaption {
+    param([string]$Text)
+    $label = New-Object Windows.Forms.Label
+    $label.Text = $Text
+    $label.Dock = 'Fill'
+    $label.TextAlign = 'BottomLeft'
+    return $label
+}
+
+function New-UpdateDialogGrid {
+    param([object[]]$Rows)
     $grid = New-Object Windows.Forms.TableLayoutPanel
     $grid.Dock = 'Fill'; $grid.Padding = New-Object Windows.Forms.Padding(12)
-    $grid.RowCount = 5; $grid.ColumnCount = 1
-    foreach ($height in @(65, 0, 28, 34, 42)) {
-        $style = New-Object Windows.Forms.RowStyle('Absolute', $height)
-        if ($height -eq 0) { $style.SizeType = 'Percent'; $style.Height = 100 }
+    $grid.RowCount = $Rows.Count; $grid.ColumnCount = 1
+    for ($index = 0; $index -lt $Rows.Count; $index++) {
+        $style = New-Object Windows.Forms.RowStyle('Absolute', $Rows[$index][1])
+        if ($Rows[$index][1] -eq 0) { $style.SizeType = 'Percent'; $style.Height = 100 }
         [void]$grid.RowStyles.Add($style)
+        if ($Rows[$index][0]) { $grid.Controls.Add($Rows[$index][0], 0, $index) }
     }
+    return $grid
+}
+
+function New-UpdateDialogTitle {
+    param([switch]$Settings)
     $title = New-Object Windows.Forms.Label
     $title.Dock = 'Fill'
     $title.Text = "当前版本 $(Get-UpdateVersion)。每次启动都会检查，提醒频率仅控制自动弹窗。"
-    $notesArea = New-NotesArea
-    if ($script:AvailableUpdate) {
-        $title.Text += "`r`n发现新版 $($script:AvailableUpdate.Version)。"
-        $markdown = [string]$script:AvailableUpdate.Notes
-        if ($markdown -notmatch '^\s*#') { $markdown = "**更新日志：**`n" + $markdown }
-        Write-MarkdownNotes $script:Controls.UpdateNotes $markdown
-    }
+    if ($Settings) { $title.Text += "`r`n" + '需要立即检查时，点击主界面左下角“检查更新”。'; return $title }
+    $title.Text += "`r`n发现新版 $($script:AvailableUpdate.Version)。"
     if (-not $env:P4AM_UPDATE_REQUEST) { $title.Text += "`r`n源码启动：点击更新打开下载页。" }
     elseif (-not (Test-Path -LiteralPath (Join-Path ([IO.Path]::GetDirectoryName($env:P4AM_EXECUTABLE)) 'unins000.exe'))) {
         $title.Text += "`r`n便携版：更新将安装新版，保留当前便携文件。"
     }
-    $label = New-Object Windows.Forms.Label
-    $label.Text = '提醒更新频率：'; $label.Dock = 'Fill'
-    $combo = New-UpdateFrequencyCombo
-    $grid.Controls.Add($title, 0, 0); $grid.Controls.Add($notesArea, 0, 1)
-    $grid.Controls.Add($label, 0, 2); $grid.Controls.Add($combo, 0, 3)
-    $grid.Controls.Add((New-UpdateChoiceButtons $dialog -Settings:$Settings), 0, 4)
-    $dialog.Controls.Add($grid)
-    return [pscustomobject]@{ Form = $dialog; Frequency = $combo }
+    return $title
+}
+
+function New-UpdateDialogNotes {
+    $notesArea = New-NotesArea
+    $markdown = [string]$script:AvailableUpdate.Notes
+    if ($markdown -notmatch '^\s*#') { $markdown = "**更新日志：**`n" + $markdown }
+    Write-MarkdownNotes $script:Controls.UpdateNotes $markdown
+    return $notesArea
 }
 
 function Show-UpdateSettings {
+    $originalTheme = $script:UiThemeName
+    $saved = $false
     $dialog = New-UpdateDialog -Settings
     try {
-        $choice = $dialog.Form.ShowDialog($script:Controls.Main)
-        if ($choice -eq 'Cancel') { return }
+        if ($dialog.Form.ShowDialog($script:Controls.Main) -ne 'OK') { return }
         $script:UpdatePreferences.Frequency = $script:UpdateFrequencies[$dialog.Frequency.SelectedIndex]
+        $script:UpdatePreferences | Add-Member NoteProperty Theme $script:UiThemeName -Force
         Save-UpdatePreferences $script:UpdatePreferences
-        if ($choice -eq 'Yes') { Start-UpdateOperation 'Check' -Manual }
+        $saved = $true
     }
     catch { Set-UpdateError $_.Exception.Message }
-    finally { $dialog.Form.Dispose() }
+    finally {
+        $dialog.Form.Dispose()
+        if (-not $saved -and $script:UiThemeName -ne $originalTheme) {
+            Set-UiTheme $originalTheme
+            Update-UiTheme $script:Controls.Main
+        }
+    }
 }
 
 function Set-UpdateError {
@@ -211,7 +277,7 @@ function Complete-UpdateOperation {
         $script:UpdateManual = $worker.Manual
         $script:UpdatePromptPending = [bool]$script:AvailableUpdate
         $script:Controls.UpdateStatus.Text = "当前版本 $(Get-UpdateVersion)，没有更新的正式版。"
-        if ($script:AvailableUpdate) { $script:Controls.UpdateStatus.Text = "发现新版 $($script:AvailableUpdate.Version)，可在更新 / 设置中查看。" }
+        if ($script:AvailableUpdate) { $script:Controls.UpdateStatus.Text = "发现新版 $($script:AvailableUpdate.Version)，" + '点击“检查更新”查看。' }
     }
     catch { Set-UpdateError $_.Exception.Message }
     finally { $worker.Shell.Dispose() }

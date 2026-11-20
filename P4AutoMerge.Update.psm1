@@ -1,6 +1,6 @@
 ﻿Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$script:ProductVersion = '1.0.4'
+$script:ProductVersion = '1.0.5'
 $script:Repository = 'https://github.com/rexyizhouhu/p4-auto-merge'
 $script:LatestApi = 'https://api.github.com/repos/rexyizhouhu/p4-auto-merge/releases/latest'
 $script:LatestManifest = $script:Repository + '/releases/latest/download/update.json'
@@ -13,13 +13,14 @@ function Get-UpdateVersion {
 
 function Get-UpdatePreferences {
     param([string]$Path = $script:PreferencesPath)
-    $result = [pscustomobject]@{ Frequency = 'Always'; SkippedVersion = ''; LastPromptUtc = '' }
+    $result = [pscustomobject]@{ Frequency = 'Always'; SkippedVersion = ''; LastPromptUtc = ''; Theme = '' }
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $result }
     try {
         $saved = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($saved.Frequency -in @('Always', 'Weekly', 'Monthly', 'Never')) { $result.Frequency = $saved.Frequency }
         $result.SkippedVersion = [string]$saved.SkippedVersion
         $result.LastPromptUtc = [string]$saved.LastPromptUtc
+        if ($saved.PSObject.Properties['Theme']) { $result.Theme = [string]$saved.Theme }
     }
     catch { return $result }
     return $result

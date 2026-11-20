@@ -84,10 +84,10 @@ Test-UpdateCase 'Preferences persistence, corrupted file fallback and atomic wri
     $path=Join-Path $testRoot 'settings.json'
     $prefs=Get-UpdatePreferences $path
     Assert-Update ($prefs.Frequency -eq 'Always') 'Default is not every launch'
-    $prefs.Frequency='Monthly'; $prefs.SkippedVersion='1.1.0'; $prefs.LastPromptUtc=[datetime]::UtcNow.ToString('o')
+    $prefs.Frequency='Monthly'; $prefs.SkippedVersion='1.1.0'; $prefs.LastPromptUtc=[datetime]::UtcNow.ToString('o'); $prefs.Theme='DarkModern'
     Save-UpdatePreferences $prefs $path
     $saved=Get-UpdatePreferences $path
-    Assert-Update ($saved.Frequency -eq 'Monthly' -and $saved.SkippedVersion -eq '1.1.0') 'Settings not persisted'
+    Assert-Update ($saved.Frequency -eq 'Monthly' -and $saved.SkippedVersion -eq '1.1.0' -and $saved.Theme -eq 'DarkModern') 'Settings not persisted'
     Save-UpdatePreferences $saved $path
     Assert-Update (@(Get-ChildItem -LiteralPath $testRoot -Filter '*.tmp').Count -eq 0) 'Temporary preference file leaked'
     [IO.File]::WriteAllText($path,'broken json')
